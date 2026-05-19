@@ -170,7 +170,7 @@ export default function QueryPage(): React.ReactElement {
                 >
                   {/* User bubble */}
                   <div className="flex justify-end">
-                    <div className="max-w-lg px-4 py-3 rounded-2xl rounded-br-sm bg-indigo-600/25 border border-indigo-500/20 text-sm text-slate-200">
+                    <div className="max-w-lg px-4 py-3 rounded-2xl rounded-br-sm bg-indigo-600 border border-indigo-400/30 text-sm text-white font-medium shadow-glow-sm">
                       {pendingQuery}
                     </div>
                   </div>
@@ -212,7 +212,7 @@ export default function QueryPage(): React.ReactElement {
                 >
                   {/* User bubble */}
                   <div className="flex justify-end">
-                    <div className="max-w-lg px-4 py-3 rounded-2xl rounded-br-sm bg-indigo-600/25 border border-indigo-500/20 text-sm text-slate-200">
+                    <div className="max-w-lg px-4 py-3 rounded-2xl rounded-br-sm bg-indigo-600 border border-indigo-400/30 text-sm text-white font-medium shadow-glow-sm">
                       {queryResult.query}
                     </div>
                   </div>
