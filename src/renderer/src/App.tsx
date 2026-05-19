@@ -30,26 +30,22 @@ export default function App(): React.ReactElement {
     setProcessingStatus,
     updateSource,
     clearProcessingStatus,
+    addToHistory,
   } = useAppStore()
 
   useEffect(() => {
-    checkOnboarding()
     loadInitialData()
     setupEventListeners()
   }, [])
 
-  function checkOnboarding() {
-    const done = localStorage.getItem('cf_onboarding_complete')
-    if (done === 'true') setOnboardingComplete(true)
-  }
-
   async function loadInitialData() {
     try {
-      const [sources, stats, entities, settings] = await Promise.all([
+      const [sources, stats, entities, settings, history] = await Promise.all([
         api.sources.list(),
         api.memory.getStats(),
         api.entities.list(50),
         api.settings.get(),
+        api.memory.getHistory(30),
       ])
 
       setSources(sources as DataSource[])
@@ -57,6 +53,10 @@ export default function App(): React.ReactElement {
       setEntities(entities as Entity[])
       setSettings(settings as AppSettings)
       setOllamaConnected((stats as Stats).ollamaConnected)
+
+      // Restore persisted query history oldest-first so newest ends up at top
+      const historyItems = (history as AIQueryResult[]).reverse()
+      for (const item of historyItems) addToHistory(item)
 
       if ((sources as DataSource[]).length > 0) {
         const timeline = await api.memory.getTimeline(50)

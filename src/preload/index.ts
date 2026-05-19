@@ -22,6 +22,8 @@ const api = {
       ipcRenderer.invoke('memory:get-timeline', limit),
     getStats: () =>
       ipcRenderer.invoke('memory:get-stats'),
+    getHistory: (limit?: number) =>
+      ipcRenderer.invoke('memory:get-history', limit),
   },
 
   // Sources

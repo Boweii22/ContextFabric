@@ -314,37 +314,49 @@ export default function QueryPage(): React.ReactElement {
                         </span>
                       </div>
                       <div className="space-y-2">
-                        {queryResult.sources.map((result, i) => (
+                        {queryResult.sources.map((result, i) => {
+                          // Sources from DB history are simplified {title,sourceName,score,timestamp}
+                          // Sources from live queries have a full .node object
+                          // Normalise both into the same shape for rendering
+                          const node = result.node
+                          const title = node?.title ?? (result as unknown as Record<string,unknown>)['title'] as string ?? 'Source'
+                          const sourceName = node?.sourceName ?? (result as unknown as Record<string,unknown>)['sourceName'] as string ?? ''
+                          const timestamp = node?.timestamp ?? (result as unknown as Record<string,unknown>)['timestamp'] as number ?? 0
+                          const nodeType = node?.type ?? 'document'
+                          const content = node?.content ?? ''
+                          const nodeId = node?.id ?? `hist-${i}`
+                          const highlight = (result.highlights?.[0]) || truncate(content, 120) || sourceName
+
+                          return (
                           <motion.div
-                            key={result.node.id}
+                            key={nodeId}
                             initial={{ opacity: 0, y: 6 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ delay: i * 0.04 }}
-                            onClick={() => setActiveSource(
-                              activeSource?.node.id === result.node.id ? null : result
+                            onClick={() => node && setActiveSource(
+                              activeSource?.node.id === nodeId ? null : result
                             )}
                             className={cn(
-                              'p-3.5 rounded-xl border cursor-pointer transition-all',
-                              activeSource?.node.id === result.node.id
+                              'p-3.5 rounded-xl border transition-all',
+                              node ? 'cursor-pointer' : 'cursor-default',
+                              activeSource?.node?.id === nodeId
                                 ? 'border-indigo-500/30 bg-indigo-500/5'
                                 : 'border-white/[0.06] bg-cosmos-800 hover:border-white/[0.12]'
                             )}
                           >
                             <div className="flex items-center gap-2.5 mb-1.5">
                               <span className="text-2xs font-bold text-slate-600">#{i + 1}</span>
-                              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: getTypeColor(result.node.type) }} />
-                              <span className="text-xs font-medium text-slate-300 flex-1 truncate">{result.node.title}</span>
-                              <span className="text-2xs text-slate-600 shrink-0">{formatDate(result.node.timestamp)}</span>
+                              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: getTypeColor(nodeType) }} />
+                              <span className="text-xs font-medium text-slate-300 flex-1 truncate">{title}</span>
+                              {timestamp > 0 && <span className="text-2xs text-slate-600 shrink-0">{formatDate(timestamp)}</span>}
                               <span className="text-2xs px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 shrink-0">
                                 {(result.score * 100).toFixed(0)}%
                               </span>
                             </div>
-                            <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">
-                              {result.highlights[0] || truncate(result.node.content, 120)}
-                            </p>
+                            <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">{highlight}</p>
 
                             <AnimatePresence>
-                              {activeSource?.node.id === result.node.id && (
+                              {activeSource?.node?.id === nodeId && content && (
                                 <motion.div
                                   initial={{ height: 0, opacity: 0 }}
                                   animate={{ height: 'auto', opacity: 1 }}
@@ -353,14 +365,15 @@ export default function QueryPage(): React.ReactElement {
                                 >
                                   <div className="mt-3 pt-3 border-t border-white/[0.06]">
                                     <p className="text-xs text-slate-400 leading-relaxed whitespace-pre-wrap font-mono">
-                                      {truncate(result.node.content, 1000)}
+                                      {truncate(content, 1000)}
                                     </p>
                                   </div>
                                 </motion.div>
                               )}
                             </AnimatePresence>
                           </motion.div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </div>
                   )}

@@ -78,8 +78,11 @@ export const useAppStore = create<AppStore>()(
     currentPage: 'dashboard',
     setCurrentPage: (page) => set({ currentPage: page }),
 
-    onboardingComplete: false,
-    setOnboardingComplete: (val) => set({ onboardingComplete: val }),
+    onboardingComplete: localStorage.getItem('cf_onboarding_complete') === 'true',
+    setOnboardingComplete: (val) => {
+      localStorage.setItem('cf_onboarding_complete', val ? 'true' : 'false')
+      set({ onboardingComplete: val })
+    },
     onboardingStep: 0,
     setOnboardingStep: (step) => set({ onboardingStep: step }),
 
@@ -112,7 +115,12 @@ export const useAppStore = create<AppStore>()(
     setIsQuerying: (v) => set({ isQuerying: v }),
     queryHistory: [],
     addToHistory: (result) =>
-      set(state => ({ queryHistory: [result, ...state.queryHistory].slice(0, 20) })),
+      set(state => {
+        // Deduplicate by query text — don't add if already present
+        const exists = state.queryHistory.some(h => h.query === result.query)
+        if (exists) return state
+        return { queryHistory: [result, ...state.queryHistory].slice(0, 30) }
+      }),
 
     processingStatuses: {},
     setProcessingStatus: (status) =>

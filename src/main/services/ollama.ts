@@ -118,8 +118,14 @@ export class OllamaService {
         prompt: text.substring(0, 512),
       })
       return res.data.embedding || []
-    } catch (err) {
-      console.error('[Ollama] Embed error:', err)
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      if (status === 404) {
+        // Embedding model not installed — use deterministic fallback silently
+        // Pull it with: ollama pull nomic-embed-text
+      } else {
+        console.warn('[Ollama] Embed failed, using fallback:', status)
+      }
       return this.fallbackEmbed(text)
     }
   }

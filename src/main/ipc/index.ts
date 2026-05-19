@@ -75,9 +75,8 @@ export function registerIpcHandlers(
     )
 
     const entities = new Set<string>()
-    for (const r of results) {
-      r.node.entities.forEach(e => entities.add(e))
-    }
+
+    for (const r of results) r.node.entities.forEach(e => entities.add(e))
 
     const result: AIQueryResult = {
       query,
@@ -89,7 +88,14 @@ export function registerIpcHandlers(
       processingTime: Date.now() - start,
     }
 
+    // Persist to DB so history survives app restarts
+    db.saveQueryHistory(result)
+
     return result
+  })
+
+  ipcMain.handle('memory:get-history', async (_, limit = 30) => {
+    return db.getQueryHistory(limit)
   })
 
   ipcMain.handle('memory:get-node', async (_, id: string) => {
