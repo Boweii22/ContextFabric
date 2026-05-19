@@ -1,10 +1,5 @@
 import axios, { AxiosInstance } from 'axios'
 
-interface OllamaChatResponse {
-  message: { role: string; content: string }
-  done: boolean
-}
-
 interface OllamaGenerateResponse {
   response: string
   done: boolean
@@ -62,25 +57,25 @@ export class OllamaService {
     }
   }
 
-  // Strip Gemma 4 thinking tokens and clean up the response
+  // Strip Gemma 4 thinking tokens, leading dashes, and clean whitespace
   private clean(text: string): string {
     return text
       .replace(/<think>[\s\S]*?<\/think>/gi, '')
-      .replace(/<\|.*?\|>/g, '')
+      .replace(/<\|[\s\S]*?\|>/g, '')
+      .replace(/^[\s\-#]+/, '')   // strip leading ---, ###, whitespace
       .trim()
   }
 
-  // Use /api/generate (more reliable than /api/chat for Gemma 4 via Ollama)
   private async generate(prompt: string): Promise<string> {
     const res = await this.client.post<OllamaGenerateResponse>('/api/generate', {
       model: this.model,
       prompt,
       stream: false,
       options: {
-        temperature: 0.1,
+        temperature: 0.2,
         num_ctx: 4096,
-        num_predict: 400,
-        stop: ['\n\n\n', '---'],
+        num_predict: 500,
+        // No stop sequences — they were cutting responses to empty
       },
     })
     return this.clean(res.data.response || '')
@@ -111,144 +106,116 @@ export class OllamaService {
   async queryWithContext(
     userQuery: string,
     contextChunks: Array<{ content: string; source: string; timestamp: number }>,
-    importLines: string[] = []
+    importLines: string[] = [],
+    sourceMeta = ''
   ): Promise<{ answer: string; reasoning: string }> {
 
-    // Build a tight, no-fluff prompt — no system block, just direct instruction
-    const parts: string[] = []
+    const chunks = contextChunks.slice(0, 5)
 
-    // Put imports first if we have them — most useful for stack questions
-    if (importLines.length > 0) {
-      parts.push(`Libraries/imports found in the project:\n${importLines.slice(0, 30).join('\n')}`)
+    let prompt = `You are a personal AI assistant. Answer the question using the context below. Be specific and direct.\n\n`
+
+    // Always include source list — tells Gemma the project name from the path
+    if (sourceMeta) {
+      prompt += `Connected knowledge sources:\n${sourceMeta}\n\n`
     }
 
-    // Then the actual source chunks (trimmed)
-    const chunks = contextChunks
-      .filter(c => !c.source.includes('Auto-extracted')) // already handled above
-      .slice(0, 4)
+    if (importLines.length > 0) {
+      prompt += `Imports/libraries detected in project files:\n${importLines.slice(0, 20).join('\n')}\n\n`
+    }
 
     if (chunks.length > 0) {
-      parts.push(
-        chunks
-          .map((c, i) => `[${i + 1}] ${c.source}\n${c.content.substring(0, 300)}`)
-          .join('\n\n')
-      )
+      prompt += `Relevant file contents:\n`
+      chunks.forEach((c, i) => {
+        prompt += `\n[${i + 1}] ${c.source}\n${c.content.substring(0, 350)}\n`
+      })
+      prompt += `\n`
     }
 
-    const context = parts.join('\n\n---\n\n')
+    prompt += `Question: ${userQuery}\n\nAnswer:`
 
-    const prompt = context
-      ? `Context from my personal projects:\n${context}\n\nAnswer this question directly and concisely: ${userQuery}`
-      : `Answer this question directly: ${userQuery}\n(No personal context found.)`
-
-    let answer: string
+    let answer = ''
     try {
       answer = await this.generate(prompt)
     } catch (err) {
-      throw new Error(`Ollama failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      throw new Error(`Ollama failed: ${err instanceof Error ? err.message : 'Unknown'}`)
     }
 
-    // If Gemma still returns empty, build answer from imports directly
-    if (!answer || answer.length < 5) {
-      if (importLines.length > 0) {
-        answer = this.buildStackAnswerFromImports(importLines, userQuery)
+    // Empty response fallback — only use stack detection for stack questions
+    if (!answer || answer.length < 8) {
+      const isStackQuestion = /stack|technolog|framework|language|library|built with|dependencies/i.test(userQuery)
+      if (isStackQuestion && importLines.length > 0) {
+        answer = this.buildStackAnswer(importLines)
+      } else if (chunks.length > 0) {
+        // Give the user the raw context so they can see what was found
+        answer = `I found ${chunks.length} relevant source(s) but couldn't generate a response. Here's what was found:\n\n` +
+          chunks.slice(0, 2).map(c => `From "${c.source}":\n${c.content.substring(0, 200)}`).join('\n\n')
       } else {
-        answer = 'No matching content found in your indexed sources for this query.'
+        answer = `Nothing found in your indexed sources matching "${userQuery}". Try syncing your sources first, or rephrase the question.`
       }
     }
 
     const reasoning = chunks.length > 0
-      ? `Found ${chunks.length} relevant chunk(s). ${importLines.length > 0 ? `Detected ${importLines.length} import statements.` : ''}`
-      : 'No source chunks matched — answer based on imports only.'
+      ? `Searched ${chunks.length} source chunk(s).${importLines.length > 0 ? ` Found ${importLines.length} import statements.` : ''}`
+      : 'No matching sources found in your knowledge base.'
 
     return { answer, reasoning }
   }
 
-  // Deterministic stack answer from import lines — works even when Gemma returns empty
-  private buildStackAnswerFromImports(imports: string[], query: string): string {
+  // Only called for stack-specific questions when Gemma returns empty
+  private buildStackAnswer(imports: string[]): string {
     const all = imports.join(' ').toLowerCase()
+    const found: string[] = []
 
-    const detected: string[] = []
+    const checks: [RegExp, string][] = [
+      [/\bflask\b/, 'Flask'], [/\bfastapi\b/, 'FastAPI'], [/\bdjango\b/, 'Django'],
+      [/\bstreamlit\b/, 'Streamlit'], [/\bgradio\b/, 'Gradio'],
+      [/\breact\b/, 'React'], [/\bnext\b/, 'Next.js'], [/\bexpress\b/, 'Express'],
+      [/\bvue\b/, 'Vue'],
+      [/\bopenai\b/, 'OpenAI API'], [/\banthropic\b/, 'Anthropic API'],
+      [/\blangchain\b/, 'LangChain'], [/\btransformers\b/, 'HuggingFace'],
+      [/\btorch\b|\bpytorch\b/, 'PyTorch'], [/\btensorflow\b/, 'TensorFlow'],
+      [/\bsqlite\b/, 'SQLite'], [/\bpostgres\b|\bpsycopg\b/, 'PostgreSQL'],
+      [/\bmongodb\b|\bpymongo\b/, 'MongoDB'], [/\bredis\b/, 'Redis'],
+      [/\brequests\b/, 'requests'], [/\baiohttp\b/, 'aiohttp'],
+      [/\bselenium\b/, 'Selenium'], [/\bplaywright\b/, 'Playwright'],
+      [/\bbs4\b|\bbeautifulsoup\b/, 'BeautifulSoup'],
+      [/\bpandas\b/, 'Pandas'], [/\bnumpy\b/, 'NumPy'],
+      [/\bprisma\b/, 'Prisma'], [/\bdrizzle\b/, 'Drizzle'],
+      [/\bsupbase\b/, 'Supabase'], [/\bfirebase\b/, 'Firebase'],
+    ]
 
-    // Languages
-    if (imports.some(l => l.match(/^(import |from )/))) detected.push('Python')
-    if (imports.some(l => l.match(/^(import |from |require\(|const |let )/) && l.match(/\.ts|\.tsx|typescript/))) detected.push('TypeScript')
-    if (imports.some(l => l.match(/^(import |from |require\()/) && !l.match(/^(import |from ).*\.py/))) {
-      if (all.includes('.js') || all.includes('node') || all.includes('express') || all.includes('react')) detected.push('JavaScript/Node.js')
+    for (const [re, name] of checks) {
+      if (re.test(all)) found.push(name)
     }
 
-    // Python frameworks
-    if (all.includes('flask')) detected.push('Flask')
-    if (all.includes('fastapi')) detected.push('FastAPI')
-    if (all.includes('django')) detected.push('Django')
-    if (all.includes('streamlit')) detected.push('Streamlit')
-    if (all.includes('gradio')) detected.push('Gradio')
+    const isPython = imports.some(l => /^(import |from )/.test(l))
+    const isTS = imports.some(l => /typescript|\.ts['"]/.test(l))
+    const isJS = imports.some(l => /require\(|from ['"]/.test(l)) && !isPython
 
-    // JS frameworks
-    if (all.includes('react')) detected.push('React')
-    if (all.includes('next')) detected.push('Next.js')
-    if (all.includes('vue')) detected.push('Vue')
-    if (all.includes('express')) detected.push('Express')
+    const langs = [...(isPython ? ['Python'] : []), ...(isTS ? ['TypeScript'] : []), ...(isJS ? ['JavaScript'] : [])]
 
-    // AI/ML
-    if (all.includes('openai')) detected.push('OpenAI API')
-    if (all.includes('anthropic')) detected.push('Anthropic/Claude API')
-    if (all.includes('langchain')) detected.push('LangChain')
-    if (all.includes('torch') || all.includes('pytorch')) detected.push('PyTorch')
-    if (all.includes('tensorflow')) detected.push('TensorFlow')
-    if (all.includes('transformers')) detected.push('HuggingFace Transformers')
-
-    // Databases
-    if (all.includes('sqlite') || all.includes('sqlite3')) detected.push('SQLite')
-    if (all.includes('postgres') || all.includes('psycopg')) detected.push('PostgreSQL')
-    if (all.includes('mongodb') || all.includes('pymongo')) detected.push('MongoDB')
-    if (all.includes('redis')) detected.push('Redis')
-    if (all.includes('supabase')) detected.push('Supabase')
-
-    // HTTP / networking
-    if (all.includes('requests')) detected.push('requests (HTTP)')
-    if (all.includes('aiohttp')) detected.push('aiohttp')
-    if (all.includes('httpx')) detected.push('httpx')
-    if (all.includes('selenium') || all.includes('playwright')) detected.push('Browser automation')
-    if (all.includes('beautifulsoup') || all.includes('bs4')) detected.push('BeautifulSoup')
-
-    // Remove duplicates
-    const unique = [...new Set(detected)]
-
-    if (unique.length === 0) {
-      return `Found ${imports.length} import statements in the project but couldn't identify specific frameworks. Here are the imports found:\n${imports.slice(0, 10).join('\n')}`
+    if (langs.length === 0 && found.length === 0) {
+      return `Found ${imports.length} import(s) but couldn't identify specific technologies:\n${imports.slice(0, 8).join('\n')}`
     }
 
-    const mainLangs = unique.filter(t => ['Python', 'TypeScript', 'JavaScript/Node.js'].includes(t))
-    const frameworks = unique.filter(t => !['Python', 'TypeScript', 'JavaScript/Node.js'].includes(t))
-
-    let answer = ''
-    if (mainLangs.length > 0) answer += `Language: **${mainLangs.join(', ')}**\n`
-    if (frameworks.length > 0) answer += `Libraries/Frameworks: **${frameworks.join(', ')}**\n`
-    answer += `\nDetected from ${imports.length} import statements across your indexed source files.`
-
-    return answer
+    return [
+      langs.length > 0 ? `Language: ${langs.join(', ')}` : '',
+      found.length > 0 ? `Libraries: ${found.join(', ')}` : '',
+      `\nDetected from ${imports.length} import statement(s) in your indexed files.`
+    ].filter(Boolean).join('\n')
   }
 
   async extractEntities(text: string): Promise<Array<{ name: string; type: string }>> {
-    // Use simple extraction — avoids extra Ollama calls during indexing
     return this.simpleEntityExtract(text)
   }
 
   async summarize(text: string, maxLength = 150): Promise<string> {
-    try {
-      const prompt = `Summarize in one sentence (max ${maxLength} chars): ${text.substring(0, 800)}`
-      const result = await this.generate(prompt)
-      return result.substring(0, maxLength) || text.substring(0, maxLength)
-    } catch {
-      return text.substring(0, maxLength)
-    }
+    return text.substring(0, maxLength)
   }
 
   async extractDecision(text: string): Promise<{
     isDecision: boolean; decision?: string; reasoning?: string; alternatives?: string[]
   }> {
-    // Skip for now to keep indexing fast — return false
     return { isDecision: false }
   }
 
@@ -267,18 +234,15 @@ export class OllamaService {
   }
 
   private simpleEntityExtract(text: string): Array<{ name: string; type: string }> {
-    const techWords = [
-      'react', 'node', 'typescript', 'python', 'postgres', 'redis', 'docker',
-      'kubernetes', 'aws', 'gcp', 'firebase', 'supabase', 'graphql', 'mongodb',
-      'elasticsearch', 'kafka', 'nginx', 'express', 'fastapi', 'prisma', 'sqlite',
-      'flask', 'django', 'streamlit', 'openai', 'anthropic', 'langchain'
-    ]
+    const tech = ['react','node','typescript','python','postgres','redis','docker',
+      'kubernetes','aws','gcp','firebase','supabase','graphql','mongodb',
+      'elasticsearch','nginx','express','fastapi','prisma','sqlite',
+      'flask','django','streamlit','openai','anthropic','langchain']
     const entities: Array<{ name: string; type: string }> = []
     const lower = text.toLowerCase()
-    for (const tech of techWords) {
-      if (lower.includes(tech)) {
-        entities.push({ name: tech.charAt(0).toUpperCase() + tech.slice(1), type: 'technology' })
-      }
+    for (const t of tech) {
+      if (lower.includes(t))
+        entities.push({ name: t.charAt(0).toUpperCase() + t.slice(1), type: 'technology' })
     }
     return entities.slice(0, 8)
   }

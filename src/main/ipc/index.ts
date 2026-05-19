@@ -23,34 +23,43 @@ export function registerIpcHandlers(
   ipcMain.handle('memory:query', async (_, query: string) => {
     const start = Date.now()
 
+    // Build source metadata context — always included so Gemma knows what exists
+    const allSources = db.getSources()
+    const sourceMeta = allSources
+      .filter(s => s.status === 'ready')
+      .map(s => {
+        const pathParts = s.path.replace(/\\/g, '/').split('/')
+        const folderName = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || s.name
+        return `- "${s.name}" (${s.type}): path="${s.path}", folder="${folderName}", ${s.nodeCount} files indexed`
+      })
+      .join('\n')
+
     // Expand query into multiple search terms
     const expansionTerms = expandQuery(query)
     const allResults = await Promise.all(
       expansionTerms.map(q => search.hybridSearch(q, 5))
     )
 
-    // Deduplicate, boost early file chunks (chunk 1-3 have imports), re-rank
+    // Deduplicate, boost early file chunks and named config files
     const seen = new Set<string>()
     const merged = allResults
       .flat()
       .filter(r => { if (seen.has(r.node.id)) return false; seen.add(r.node.id); return true })
       .map(r => {
-        // Boost score for early chunks — they contain imports/dependencies/README
         const chunkIndex = (r.node.metadata as Record<string, unknown>)?.chunkIndex as number ?? 99
         const earlyBoost = chunkIndex <= 2 ? 0.15 : chunkIndex <= 5 ? 0.07 : 0
-        // Boost README and requirements files
         const title = r.node.title.toLowerCase()
         const nameBoost = (
           title.includes('readme') || title.includes('requirements') ||
           title.includes('package.json') || title.includes('pyproject') ||
-          title.includes('cargo.toml') || title.includes('go.mod')
-        ) ? 0.2 : 0
+          title.includes('cargo.toml') || title.includes('go.mod') ||
+          title.includes('setup.py') || title.includes('setup.cfg')
+        ) ? 0.25 : 0
         return { ...r, score: r.score + earlyBoost + nameBoost }
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, 6)
 
-    // Pre-extract import lines from all retrieved code chunks
     const importLines = extractImportLines(merged.map(r => r.node.content))
 
     const contextChunks = merged.map(r => ({
@@ -61,7 +70,9 @@ export function registerIpcHandlers(
 
     const results = merged
 
-    const { answer, reasoning } = await ollama.queryWithContext(query, contextChunks, importLines)
+    const { answer, reasoning } = await ollama.queryWithContext(
+      query, contextChunks, importLines, sourceMeta
+    )
 
     const entities = new Set<string>()
     for (const r of results) {
