@@ -17,6 +17,16 @@ export function registerIpcHandlers(
   // === MEMORY ===
 
   ipcMain.handle('memory:search', async (_, query: string, limit = 20) => {
+    // Empty query = fetch most recent nodes by timestamp directly
+    if (!query || !query.trim()) {
+      const nodes = db.getNodes(limit)
+      return nodes.map(n => ({
+        node: n,
+        score: 1,
+        highlights: [n.summary || n.content.substring(0, 120)],
+        sourceContext: `${n.sourceName} · ${new Date(n.timestamp).toLocaleDateString()}`,
+      }))
+    }
     return await search.hybridSearch(query, limit)
   })
 

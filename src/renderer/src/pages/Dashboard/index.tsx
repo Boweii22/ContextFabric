@@ -22,20 +22,34 @@ const QUICK_QUERIES = [
 
 export default function DashboardPage(): React.ReactElement {
   const navigate = useNavigate()
-  const { stats, sources, timeline, queryResult, setQueryResult, setIsQuerying, isQuerying, addToHistory } = useAppStore()
+  const { stats, sources, timeline, setTimeline, setStats, isQuerying } = useAppStore()
   const [quickQuery, setQuickQuery] = useState('')
   const [recentNodes, setRecentNodes] = useState<SearchResult[]>([])
 
   useEffect(() => {
-    loadRecentNodes()
+    loadDashboardData()
   }, [])
 
-  async function loadRecentNodes() {
+  // Refresh when any source finishes syncing
+  useEffect(() => {
+    const hasSyncing = sources.some(s => s.status === 'indexing')
+    const allReady = sources.length > 0 && sources.every(s => s.status !== 'indexing')
+    if (allReady) loadDashboardData()
+  }, [sources])
+
+  async function loadDashboardData() {
     try {
-      const results = await api.memory.search('', 8) as SearchResult[]
-      setRecentNodes(results)
+      // Empty string triggers direct getNodes(8) by timestamp in IPC handler
+      const [nodes, freshTimeline, freshStats] = await Promise.all([
+        api.memory.search('', 8),
+        api.memory.getTimeline(6),
+        api.memory.getStats(),
+      ])
+      setRecentNodes(nodes as SearchResult[])
+      setTimeline(freshTimeline as Parameters<typeof setTimeline>[0])
+      setStats(freshStats as Parameters<typeof setStats>[0])
     } catch {
-      // ignore
+      // ignore on initial load when db is empty
     }
   }
 
