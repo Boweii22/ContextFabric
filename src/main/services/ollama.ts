@@ -242,17 +242,115 @@ export class OllamaService {
   }
 
   async extractEntities(text: string): Promise<Array<{ name: string; type: string }>> {
-    return this.simpleEntityExtract(text)
+    // Always get regex hits first — fast and reliable
+    const regexHits = this.simpleEntityExtract(text)
+
+    try {
+      const prompt = `List the named entities in this text as a JSON array. Max 8 items.
+Types: technology, person, project, concept, tool, organization
+Format: [{"name":"X","type":"Y"}]
+Only include clearly named things, not generic words.
+
+Text: ${text.substring(0, 600)}
+
+JSON:`
+
+      const response = await this.generate(prompt)
+      const match = response.match(/\[[\s\S]*?\]/)
+      if (!match) return regexHits
+
+      const parsed = JSON.parse(match[0]) as Array<{ name?: string; type?: string }>
+      if (!Array.isArray(parsed)) return regexHits
+
+      const aiHits = parsed
+        .filter(e => e.name && e.type)
+        .map(e => ({ name: String(e.name).trim(), type: String(e.type).trim() }))
+        .slice(0, 8)
+
+      // Merge AI + regex results, deduplicate by name (case-insensitive)
+      const seen = new Set(aiHits.map(e => e.name.toLowerCase()))
+      for (const r of regexHits) {
+        if (!seen.has(r.name.toLowerCase())) {
+          aiHits.push(r)
+          seen.add(r.name.toLowerCase())
+        }
+      }
+
+      return aiHits.slice(0, 10)
+    } catch {
+      return regexHits
+    }
   }
 
   async summarize(text: string, maxLength = 150): Promise<string> {
-    return text.substring(0, maxLength)
+    // Only summarize if content is long enough to be worth it
+    if (text.length < 300) return text.substring(0, maxLength)
+
+    try {
+      const prompt = `Summarize the following in one sentence of max ${maxLength} characters. Be specific — mention key technologies, decisions, or topics. No filler words.
+
+Text: ${text.substring(0, 1200)}
+
+One-sentence summary:`
+
+      const result = await this.generate(prompt)
+      // Take only the first sentence if Gemma returns multiple
+      const firstSentence = result.split(/[.\n]/)[0]?.trim() || result
+      return firstSentence.substring(0, maxLength)
+    } catch {
+      return text.substring(0, maxLength)
+    }
   }
 
   async extractDecision(text: string): Promise<{
-    isDecision: boolean; decision?: string; reasoning?: string; alternatives?: string[]
+    isDecision: boolean
+    decision?: string
+    reasoning?: string
+    alternatives?: string[]
   }> {
-    return { isDecision: false }
+    // Quick heuristic first — skip if content doesn't look like it has a decision
+    const decisionSignals = /\b(decided|chose|rejected|switched|picked|went with|instead of|rather than|because|reason|alternative|option|vs|versus|tradeoff|trade-off)\b/i
+    if (!decisionSignals.test(text)) return { isDecision: false }
+
+    try {
+      const prompt = `Does this text contain a technical or architectural decision? Answer with JSON only.
+
+Rules:
+- "isDecision": true only if someone explicitly chose one thing over another
+- "decision": the choice made (max 80 chars)
+- "reasoning": why they chose it (max 120 chars)
+- "alternatives": array of rejected options (max 3)
+
+Text: ${text.substring(0, 800)}
+
+JSON response:`
+
+      const response = await this.generate(prompt)
+
+      // Extract JSON from response — Gemma sometimes wraps it in markdown
+      const match = response.match(/\{[\s\S]*?\}/)
+      if (!match) return { isDecision: false }
+
+      const parsed = JSON.parse(match[0]) as {
+        isDecision?: boolean
+        decision?: string
+        reasoning?: string
+        alternatives?: string[]
+      }
+
+      if (!parsed.isDecision || !parsed.decision) return { isDecision: false }
+
+      return {
+        isDecision: true,
+        decision: parsed.decision?.substring(0, 80),
+        reasoning: parsed.reasoning?.substring(0, 120),
+        alternatives: Array.isArray(parsed.alternatives)
+          ? parsed.alternatives.slice(0, 3).map(a => String(a).substring(0, 60))
+          : [],
+      }
+    } catch {
+      return { isDecision: false }
+    }
   }
 
   private fallbackEmbed(text: string): number[] {

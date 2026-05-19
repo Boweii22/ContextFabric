@@ -311,18 +311,20 @@ export class IngestionService {
     // Batch save nodes first
     this.db.batchUpsertNodes(nodes)
 
-    // Enrich with AI (entities, summaries, embeddings)
-    const batchSize = 5
+    // Enrich with AI — run 2 nodes at a time to avoid overwhelming Ollama
+    const batchSize = 2
+    const embeddingModel = this.db.getAllSettings().embeddingModel || 'nomic-embed-text'
+
     for (let i = 0; i < nodes.length; i += batchSize) {
       const batch = nodes.slice(i, i + batchSize)
 
       await Promise.all(batch.map(async (node) => {
         try {
-          // Extract entities
+          // 1. Entity extraction — all node types
           const rawEntities = await this.ollama.extractEntities(node.content)
           node.entities = rawEntities.map(e => e.name)
 
-          // Update entities table
+          // Update entity table
           for (const { name, type } of rawEntities) {
             const existingEntities = this.db.getEntities(1000)
             const existing = existingEntities.find(e => e.name.toLowerCase() === name.toLowerCase())
@@ -344,41 +346,55 @@ export class IngestionService {
             }
           }
 
-          // Generate summary for longer content
-          if (node.content.length > 500) {
-            node.summary = await this.ollama.summarize(node.content)
+          // 2. Summarization — only for non-code content longer than 800 chars
+          const isCode = node.type === 'code'
+          if (!isCode && node.content.length > 800) {
+            node.summary = await this.ollama.summarize(node.content, 150)
           }
 
-          // Check for decisions
-          const decision = await this.ollama.extractDecision(node.content)
-          if (decision.isDecision && decision.decision) {
-            const event: TimelineEvent = {
-              id: uuidv4(),
-              nodeId: node.id,
-              title: decision.decision.substring(0, 100),
-              description: decision.reasoning || '',
-              timestamp: node.timestamp,
-              type: 'decision',
-              sourceId: source.id,
-              sourceName: source.name,
-              relatedEntities: node.entities,
-              significance: 'high',
+          // 3. Decision extraction — only conversations and documents, not code
+          if (!isCode && node.type !== 'note') {
+            const decision = await this.ollama.extractDecision(node.content)
+            if (decision.isDecision && decision.decision) {
+              this.db.upsertTimelineEvent({
+                id: uuidv4(),
+                nodeId: node.id,
+                title: decision.decision,
+                description: [
+                  decision.reasoning,
+                  decision.alternatives?.length
+                    ? `Alternatives considered: ${decision.alternatives.join(', ')}`
+                    : '',
+                ].filter(Boolean).join(' — '),
+                timestamp: node.timestamp,
+                type: 'decision',
+                sourceId: source.id,
+                sourceName: source.name,
+                relatedEntities: node.entities,
+                significance: 'high',
+              })
             }
-            this.db.upsertTimelineEvent(event)
           }
 
-          // Update node with enriched data
+          // 4. Save enriched node
           this.db.upsertNode(node)
 
-          // Generate embedding
-          const embeddingText = `${node.title}\n${node.summary || ''}\n${node.entities.join(', ')}\n${node.content.substring(0, 1000)}`
+          // 5. Generate embedding
+          const embeddingText = [
+            node.title,
+            node.summary || '',
+            node.entities.join(', '),
+            node.content.substring(0, 800),
+          ].filter(Boolean).join('\n')
+
           const embedding = await this.ollama.embed(embeddingText)
           if (embedding.length > 0) {
-            const settings = this.db.getAllSettings()
-            this.db.saveEmbedding(node.id, embedding, settings.embeddingModel || 'nomic-embed-text')
+            this.db.saveEmbedding(node.id, embedding, embeddingModel)
           }
         } catch (err) {
-          console.error(`[Ingestion] Failed to enrich node ${node.id}:`, err)
+          console.error(`[Ingestion] Node ${node.id} enrichment failed:`, err)
+          // Save the node anyway without enrichment — don't fail entire ingestion
+          this.db.upsertNode(node)
         }
       }))
 
