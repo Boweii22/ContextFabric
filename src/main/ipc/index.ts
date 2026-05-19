@@ -22,15 +22,46 @@ export function registerIpcHandlers(
 
   ipcMain.handle('memory:query', async (_, query: string) => {
     const start = Date.now()
-    const results = await search.hybridSearch(query, 6)
 
-    const contextChunks = results.map(r => ({
+    // Expand query into multiple search terms
+    const expansionTerms = expandQuery(query)
+    const allResults = await Promise.all(
+      expansionTerms.map(q => search.hybridSearch(q, 5))
+    )
+
+    // Deduplicate, boost early file chunks (chunk 1-3 have imports), re-rank
+    const seen = new Set<string>()
+    const merged = allResults
+      .flat()
+      .filter(r => { if (seen.has(r.node.id)) return false; seen.add(r.node.id); return true })
+      .map(r => {
+        // Boost score for early chunks — they contain imports/dependencies/README
+        const chunkIndex = (r.node.metadata as Record<string, unknown>)?.chunkIndex as number ?? 99
+        const earlyBoost = chunkIndex <= 2 ? 0.15 : chunkIndex <= 5 ? 0.07 : 0
+        // Boost README and requirements files
+        const title = r.node.title.toLowerCase()
+        const nameBoost = (
+          title.includes('readme') || title.includes('requirements') ||
+          title.includes('package.json') || title.includes('pyproject') ||
+          title.includes('cargo.toml') || title.includes('go.mod')
+        ) ? 0.2 : 0
+        return { ...r, score: r.score + earlyBoost + nameBoost }
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6)
+
+    // Pre-extract import lines from all retrieved code chunks
+    const importLines = extractImportLines(merged.map(r => r.node.content))
+
+    const contextChunks = merged.map(r => ({
       content: r.node.content,
       source: `${r.node.sourceName} — ${r.node.title}`,
       timestamp: r.node.timestamp,
     }))
 
-    const { answer, reasoning } = await ollama.queryWithContext(query, contextChunks)
+    const results = merged
+
+    const { answer, reasoning } = await ollama.queryWithContext(query, contextChunks, importLines)
 
     const entities = new Set<string>()
     for (const r of results) {
@@ -199,4 +230,53 @@ export function registerIpcHandlers(
       score: r.score,
     }))
   })
+}
+
+function expandQuery(query: string): string[] {
+  const q = query.toLowerCase()
+  const terms: string[] = [query]
+
+  if (q.match(/stack|technolog|framework|language|library|tool|built with|using/)) {
+    terms.push('import require from dependencies')
+    terms.push('requirements.txt package.json pyproject.toml go.mod Cargo.toml')
+    terms.push('README')
+  }
+  if (q.match(/recent|latest|last|current|project/)) {
+    terms.push('README main app index')
+    terms.push('import')
+  }
+  if (q.match(/why|decision|chose|pick|reject|switch/)) {
+    terms.push('decision architecture reason')
+  }
+  if (q.match(/auth|login|user|session|token/)) {
+    terms.push('authentication JWT session token login')
+  }
+  if (q.match(/database|db|storage|persist/)) {
+    terms.push('database SQL postgres sqlite mongo redis')
+  }
+
+  return [...new Set(terms)]
+}
+
+// Pull every import/require/use line from code chunks so Gemma
+// gets explicit library names even if the relevant chunk wasn't top-ranked.
+function extractImportLines(contents: string[]): string[] {
+  const seen = new Set<string>()
+  const lines: string[] = []
+
+  const importRe = /^(import |from |require\(|use |#include |using )/
+
+  for (const content of contents) {
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed.length > 3 && trimmed.length < 120 && importRe.test(trimmed)) {
+        if (!seen.has(trimmed)) {
+          seen.add(trimmed)
+          lines.push(trimmed)
+        }
+      }
+    }
+  }
+
+  return lines.slice(0, 40) // cap at 40 lines to keep prompt tight
 }
