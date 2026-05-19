@@ -1,10 +1,8 @@
 import axios, { AxiosInstance } from 'axios'
 
-interface OllamaGenerateResponse {
-  response: string
+interface OllamaChatResponse {
+  message: { role: string; content: string }
   done: boolean
-  context?: number[]
-  total_duration?: number
 }
 
 interface OllamaEmbedResponse {
@@ -15,6 +13,17 @@ interface OllamaModel {
   name: string
   modified_at: string
   size: number
+}
+
+const CHAT_OPTIONS = {
+  temperature: 0.1,
+  num_ctx: 2048,         // small — fast
+  num_predict: 512,      // cap output tokens
+}
+
+const EMBED_OPTIONS = {
+  temperature: 0,
+  num_ctx: 512,
 }
 
 export class OllamaService {
@@ -31,17 +40,14 @@ export class OllamaService {
     this.baseUrl = baseUrl
     this.model = model
     this.embeddingModel = embeddingModel
-    this.client = axios.create({
-      baseURL: baseUrl,
-      timeout: 120000,
-    })
+    this.client = axios.create({ baseURL: baseUrl, timeout: 300000 })
   }
 
   updateConfig(baseUrl: string, model: string, embeddingModel: string): void {
     this.baseUrl = baseUrl
     this.model = model
     this.embeddingModel = embeddingModel
-    this.client = axios.create({ baseURL: baseUrl, timeout: 120000 })
+    this.client = axios.create({ baseURL: baseUrl, timeout: 300000 })
   }
 
   async isConnected(): Promise<boolean> {
@@ -62,11 +68,27 @@ export class OllamaService {
     }
   }
 
+  // Use /api/chat — works more reliably with Gemma 4 than /api/generate
+  private async chat(userMessage: string, systemMessage?: string): Promise<string> {
+    const messages: Array<{ role: string; content: string }> = []
+    if (systemMessage) messages.push({ role: 'system', content: systemMessage })
+    messages.push({ role: 'user', content: userMessage })
+
+    const res = await this.client.post<OllamaChatResponse>('/api/chat', {
+      model: this.model,
+      messages,
+      stream: false,
+      options: CHAT_OPTIONS,
+    })
+    return res.data.message?.content?.trim() || ''
+  }
+
   async embed(text: string): Promise<number[]> {
     try {
       const res = await this.client.post<OllamaEmbedResponse>('/api/embeddings', {
         model: this.embeddingModel,
-        prompt: text,
+        prompt: text.substring(0, 500),
+        options: EMBED_OPTIONS,
       })
       return res.data.embedding
     } catch (err) {
@@ -84,153 +106,78 @@ export class OllamaService {
     return results
   }
 
-  async generate(prompt: string, system?: string, context?: number[]): Promise<string> {
-    try {
-      const body: Record<string, unknown> = {
-        model: this.model,
-        prompt,
-        stream: false,
-        options: {
-          temperature: 0.3,
-          top_p: 0.9,
-          num_ctx: 8192,
-        },
-      }
-      if (system) body.system = system
-      if (context) body.context = context
-
-      const res = await this.client.post<OllamaGenerateResponse>('/api/generate', body)
-      return res.data.response
-    } catch (err) {
-      console.error('[Ollama] Generate error:', err)
-      throw new Error(`Ollama generation failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
-    }
-  }
-
-  async *generateStream(prompt: string, system?: string): AsyncGenerator<string> {
-    const body: Record<string, unknown> = {
-      model: this.model,
-      prompt,
-      stream: true,
-      options: { temperature: 0.3, top_p: 0.9, num_ctx: 8192 },
-    }
-    if (system) body.system = system
-
-    const res = await this.client.post('/api/generate', body, {
-      responseType: 'stream',
-    })
-
-    let buffer = ''
-    for await (const chunk of res.data) {
-      buffer += chunk.toString()
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.trim()) continue
-        try {
-          const data = JSON.parse(line) as OllamaGenerateResponse
-          if (data.response) yield data.response
-          if (data.done) return
-        } catch {
-          // skip malformed
-        }
-      }
-    }
-  }
-
   async queryWithContext(
     userQuery: string,
     contextChunks: Array<{ content: string; source: string; timestamp: number }>
   ): Promise<{ answer: string; reasoning: string }> {
+    // Keep context tight — 4 sources, 400 chars each
     const contextText = contextChunks
-      .slice(0, 12)
-      .map((c, i) => `[Source ${i + 1} — ${c.source} — ${new Date(c.timestamp).toLocaleDateString()}]\n${c.content}`)
-      .join('\n\n---\n\n')
+      .slice(0, 4)
+      .map((c, i) =>
+        `[${i + 1}] ${c.source} (${new Date(c.timestamp).toLocaleDateString()}):\n${c.content.substring(0, 400)}`
+      )
+      .join('\n\n')
 
-    const system = `You are ContextFabric's AI reasoning engine. Your role is to answer questions about the user's personal knowledge, decisions, and history by analyzing their imported data.
+    const system = `You answer questions about the user's personal notes, conversations, and projects.
+Use only the provided sources. Cite with [1], [2] etc. Be concise.`
 
-You have access to the user's conversations, notes, code, and documents. Reason carefully across multiple sources. Be precise about WHEN things happened, WHY decisions were made, and HOW thinking evolved over time.
+    const prompt = contextText
+      ? `Sources:\n${contextText}\n\nQuestion: ${userQuery}`
+      : `Question: ${userQuery}\n\n(No relevant sources found — answer from general knowledge if possible.)`
 
-Always cite your sources using [Source N] notation. Be honest when information is unclear or contradictory. Focus on reconstructing the actual reasoning behind decisions, not just summarizing content.
-
-Keep answers concise but complete. Lead with the direct answer, then provide supporting evidence.`
-
-    const prompt = `USER QUESTION: ${userQuery}
-
-RELEVANT CONTEXT FROM PERSONAL KNOWLEDGE BASE:
-${contextText || 'No relevant context found in your knowledge base.'}
-
----
-Answer the question based on the context above. If the context is insufficient, say so clearly. Cite sources using [Source N] notation. Format your response with:
-1. Direct answer (1-3 sentences)
-2. Supporting evidence with citations
-3. Timeline context if relevant`
-
-    const answer = await this.generate(prompt, system)
-
-    const reasoningPrompt = `Based on this answer: "${answer.substring(0, 500)}"
-
-In 2-3 sentences, explain the reasoning process: what patterns across the sources led to this conclusion, and what the confidence level is.`
-
-    let reasoning = ''
+    let answer: string
     try {
-      reasoning = await this.generate(reasoningPrompt)
-    } catch {
-      reasoning = 'Analysis based on semantic similarity and contextual relevance across indexed sources.'
+      answer = await this.chat(prompt, system)
+    } catch (err) {
+      throw new Error(`Ollama generation failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
+
+    // Skip second reasoning call — derive it from the answer itself
+    const reasoning = contextChunks.length > 0
+      ? `Based on ${contextChunks.length} source chunk(s) from your knowledge base.`
+      : 'No matching sources found in your indexed memory.'
 
     return { answer, reasoning }
   }
 
   async extractEntities(text: string): Promise<Array<{ name: string; type: string }>> {
-    const prompt = `Extract named entities from this text. Return ONLY a JSON array with objects having "name" and "type" fields.
-Types can be: technology, person, project, concept, tool, organization.
-Limit to 10 most important entities.
-Text: "${text.substring(0, 2000)}"
-Response (JSON only):`.trim()
+    const prompt = `List up to 8 named entities in this text as JSON array: [{"name":"...","type":"..."}]
+Types: technology, person, project, concept, tool, organization
+Text: ${text.substring(0, 800)}
+JSON:`
 
     try {
-      const response = await this.generate(prompt)
-      const match = response.match(/\[[\s\S]*\]/)
+      const response = await this.chat(prompt)
+      const match = response.match(/\[[\s\S]*?\]/)
       if (match) {
         const parsed = JSON.parse(match[0])
-        return Array.isArray(parsed) ? parsed : []
+        return Array.isArray(parsed) ? parsed.slice(0, 8) : []
       }
     } catch {
-      // fallback: simple extraction
+      // ignore — fall back to simple extraction
     }
     return this.simpleEntityExtract(text)
   }
 
-  async summarize(text: string, maxLength = 200): Promise<string> {
-    const prompt = `Summarize this in ${maxLength} characters or less. Focus on key decisions, conclusions, and important information. Be direct.
-
-Text: "${text.substring(0, 3000)}"
-
-Summary:`
-
+  async summarize(text: string, maxLength = 150): Promise<string> {
+    const prompt = `Summarize in one sentence (max ${maxLength} chars): ${text.substring(0, 1000)}`
     try {
-      return await this.generate(prompt)
+      const result = await this.chat(prompt)
+      return result.substring(0, maxLength)
     } catch {
-      return text.substring(0, maxLength) + '...'
+      return text.substring(0, maxLength)
     }
   }
 
   async extractDecision(text: string): Promise<{ isDecision: boolean; decision?: string; reasoning?: string; alternatives?: string[] }> {
-    const prompt = `Analyze if this text contains an architectural or technical decision. If yes, extract the decision, reasoning, and any rejected alternatives.
-
-Text: "${text.substring(0, 2000)}"
-
-Respond with JSON only:
-{"isDecision": boolean, "decision": "string or null", "reasoning": "string or null", "alternatives": ["array of strings or empty"]}`
+    const prompt = `Does this text contain an architectural or technical decision? Reply with JSON only.
+{"isDecision":bool,"decision":"string or null","reasoning":"string or null","alternatives":[]}
+Text: ${text.substring(0, 600)}`
 
     try {
-      const response = await this.generate(prompt)
-      const match = response.match(/\{[\s\S]*\}/)
-      if (match) {
-        return JSON.parse(match[0])
-      }
+      const response = await this.chat(prompt)
+      const match = response.match(/\{[\s\S]*?\}/)
+      if (match) return JSON.parse(match[0])
     } catch {
       // ignore
     }
@@ -238,7 +185,6 @@ Respond with JSON only:
   }
 
   private fallbackEmbed(text: string): number[] {
-    // Deterministic hash-based fallback embedding (64 dims)
     const dims = 64
     const embedding = new Array(dims).fill(0)
     const words = text.toLowerCase().split(/\s+/)
@@ -253,9 +199,9 @@ Respond with JSON only:
   }
 
   private simpleEntityExtract(text: string): Array<{ name: string; type: string }> {
-    const techWords = ['react', 'node', 'typescript', 'python', 'postgres', 'redis', 'docker', 'kubernetes',
-      'aws', 'gcp', 'azure', 'firebase', 'supabase', 'graphql', 'rest', 'sql', 'nosql',
-      'mongodb', 'elasticsearch', 'kafka', 'rabbitmq', 'nginx', 'express', 'fastapi']
+    const techWords = ['react', 'node', 'typescript', 'python', 'postgres', 'redis', 'docker',
+      'kubernetes', 'aws', 'gcp', 'firebase', 'supabase', 'graphql', 'mongodb',
+      'elasticsearch', 'kafka', 'nginx', 'express', 'fastapi', 'prisma', 'sqlite']
     const entities: Array<{ name: string; type: string }> = []
     const lower = text.toLowerCase()
     for (const tech of techWords) {

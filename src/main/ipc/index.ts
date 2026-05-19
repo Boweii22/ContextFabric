@@ -22,7 +22,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('memory:query', async (_, query: string) => {
     const start = Date.now()
-    const results = await search.hybridSearch(query, 12)
+    const results = await search.hybridSearch(query, 6)
 
     const contextChunks = results.map(r => ({
       content: r.node.content,

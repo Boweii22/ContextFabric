@@ -26,6 +26,7 @@ export default function QueryPage(): React.ReactElement {
   const { queryResult, setQueryResult, isQuerying, setIsQuerying, queryHistory, addToHistory, ollamaConnected } = useAppStore()
   const [input, setInput] = useState('')
   const [activeSource, setActiveSource] = useState<SearchResult | null>(null)
+  const [copied, setCopied] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
 
@@ -62,9 +63,30 @@ export default function QueryPage(): React.ReactElement {
   }
 
   function copyAnswer() {
-    if (queryResult?.answer) {
-      navigator.clipboard.writeText(queryResult.answer)
+    const text = queryResult?.answer
+    if (!text) return
+
+    // Electron-safe clipboard: try modern API first, fall back to execCommand
+    const fallback = () => {
+      const el = document.createElement('textarea')
+      el.value = text
+      el.style.position = 'fixed'
+      el.style.opacity = '0'
+      document.body.appendChild(el)
+      el.focus()
+      el.select()
+      document.execCommand('copy')
+      document.body.removeChild(el)
     }
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(fallback)
+    } else {
+      fallback()
+    }
+
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   return (
@@ -243,10 +265,15 @@ export default function QueryPage(): React.ReactElement {
                       <div className="flex items-center gap-2 mt-3">
                         <button
                           onClick={copyAnswer}
-                          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 px-2.5 py-1.5 rounded-lg hover:bg-white/[0.05] transition-all"
+                          className={cn(
+                            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg transition-all',
+                            copied
+                              ? 'text-emerald-400 bg-emerald-500/10'
+                              : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.05]'
+                          )}
                         >
                           <Copy className="w-3 h-3" />
-                          Copy
+                          {copied ? 'Copied!' : 'Copy'}
                         </button>
                         <button
                           onClick={() => { setQueryResult(null); setInput(queryResult.query) }}
