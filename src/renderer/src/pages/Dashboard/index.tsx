@@ -41,17 +41,9 @@ export default function DashboardPage(): React.ReactElement {
 
   async function handleQuery(q: string) {
     if (!q.trim()) return
-    setIsQuerying(true)
-    setQueryResult(null)
-    navigate('/query')
-
-    try {
-      const result = await api.memory.query(q) as Parameters<typeof setQueryResult>[0]
-      setQueryResult(result)
-      if (result) addToHistory(result)
-    } finally {
-      setIsQuerying(false)
-    }
+    // Pass query as navigation state — Query page picks it up and runs it itself
+    // so displayedQuery is set correctly and the bubble is never empty
+    navigate('/query', { state: { autoQuery: q.trim() } })
   }
 
   const readySources = sources.filter(s => s.status === 'ready')

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Send, Brain, Sparkles, Clock, ChevronRight,
   Copy, RotateCcw, Zap, BookOpen, Check
@@ -29,23 +30,38 @@ export default function QueryPage(): React.ReactElement {
     ollamaConnected
   } = useAppStore()
 
+  const location = useLocation()
+  const navigate = useNavigate()
   const [input, setInput] = useState('')
-  const [pendingQuery, setPendingQuery] = useState<string | null>(null)
   const [activeSource, setActiveSource] = useState<SearchResult | null>(null)
   const [copied, setCopied] = useState(false)
+  const currentQueryRef = useRef<string>('')
+  const [displayedQuery, setDisplayedQuery] = useState<string>('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
-  useEffect(() => { inputRef.current?.focus() }, [])
+  // Pick up query passed via navigate state from Dashboard or any other page
+  useEffect(() => {
+    const auto = (location.state as { autoQuery?: string } | null)?.autoQuery
+    if (auto) {
+      // Clear nav state so refresh doesn't re-run it
+      navigate('/query', { replace: true, state: {} })
+      handleQuery(auto)
+    } else {
+      inputRef.current?.focus()
+    }
+  }, [])
 
   async function handleQuery(q?: string) {
     const query = (q || input).trim()
     if (!query || isQuerying) return
 
+    // Set the displayed query synchronously via ref before any state update
+    currentQueryRef.current = query
+    setDisplayedQuery(query)
     setInput('')
     setIsQuerying(true)
     setQueryResult(null)
     setActiveSource(null)
-    setPendingQuery(query)   // show echo immediately, before IPC returns
 
     try {
       const result = await api.memory.query(query) as AIQueryResult
@@ -63,7 +79,6 @@ export default function QueryPage(): React.ReactElement {
       })
     } finally {
       setIsQuerying(false)
-      setPendingQuery(null)
     }
   }
 
@@ -88,7 +103,7 @@ export default function QueryPage(): React.ReactElement {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  const showExamples = !queryResult && !isQuerying && !pendingQuery
+  const showExamples = !queryResult && !isQuerying && !displayedQuery
 
   return (
     <div className="h-full flex overflow-hidden">
@@ -160,7 +175,7 @@ export default function QueryPage(): React.ReactElement {
 
             {/* Pending query echo — shown immediately on submit */}
             <AnimatePresence>
-              {(pendingQuery || (isQuerying && queryResult === null)) && (
+              {(isQuerying && queryResult === null) && (
                 <motion.div
                   key="pending"
                   initial={{ opacity: 0, y: 10 }}
@@ -171,7 +186,7 @@ export default function QueryPage(): React.ReactElement {
                   {/* User bubble */}
                   <div className="flex justify-end">
                     <div className="max-w-lg px-4 py-3 rounded-2xl rounded-br-sm bg-indigo-600 border border-indigo-400/30 text-sm text-white font-medium shadow-glow-sm">
-                      {pendingQuery}
+                      {displayedQuery}
                     </div>
                   </div>
 
@@ -213,7 +228,7 @@ export default function QueryPage(): React.ReactElement {
                   {/* User bubble */}
                   <div className="flex justify-end">
                     <div className="max-w-lg px-4 py-3 rounded-2xl rounded-br-sm bg-indigo-600 border border-indigo-400/30 text-sm text-white font-medium shadow-glow-sm">
-                      {queryResult.query}
+                      {queryResult.query || displayedQuery}
                     </div>
                   </div>
 

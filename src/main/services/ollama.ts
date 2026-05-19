@@ -67,18 +67,48 @@ export class OllamaService {
   }
 
   private async generate(prompt: string): Promise<string> {
-    const res = await this.client.post<OllamaGenerateResponse>('/api/generate', {
-      model: this.model,
-      prompt,
-      stream: false,
-      options: {
-        temperature: 0.2,
-        num_ctx: 4096,
-        num_predict: 500,
-        // No stop sequences — they were cutting responses to empty
-      },
-    })
-    return this.clean(res.data.response || '')
+    try {
+      // Send NO options — let Ollama use the model's own defaults.
+      // Passing num_ctx/num_predict for certain Gemma 4 variants causes HTTP 500.
+      const res = await this.client.post<OllamaGenerateResponse>('/api/generate', {
+        model: this.model,
+        prompt,
+        stream: false,
+      })
+      return this.clean(res.data.response || '')
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { status?: number; data?: unknown }; message?: string }
+      const status = axiosErr?.response?.status
+      const body = axiosErr?.response?.data
+
+      // Extract Ollama's own error message from the response body
+      let ollamaMsg = ''
+      if (body && typeof body === 'object') {
+        ollamaMsg = (body as { error?: string }).error || JSON.stringify(body)
+      }
+
+      // On 500: retry once with a much shorter prompt, still no options
+      if (status === 500) {
+        console.warn('[Ollama] 500 on full prompt, retrying with short prompt. Ollama said:', ollamaMsg)
+        const shortPrompt = prompt.length > 600
+          ? prompt.substring(0, 600) + '\n\nAnswer briefly:'
+          : prompt
+        try {
+          const retry = await this.client.post<OllamaGenerateResponse>('/api/generate', {
+            model: this.model,
+            prompt: shortPrompt,
+            stream: false,
+          })
+          return this.clean(retry.data.response || '')
+        } catch (retryErr: unknown) {
+          const rb = (retryErr as { response?: { data?: unknown } })?.response?.data
+          const rbMsg = rb && typeof rb === 'object' ? (rb as { error?: string }).error || '' : ''
+          throw new Error(`Ollama 500: ${rbMsg || ollamaMsg || 'model error — check ollama logs'}`)
+        }
+      }
+
+      throw new Error(`Ollama ${status || 'network'} error: ${ollamaMsg || axiosErr?.message || 'unknown'}`)
+    }
   }
 
   async embed(text: string): Promise<number[]> {
