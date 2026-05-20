@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
 import { mkdirSync, existsSync } from 'fs'
+import { randomBytes, createCipheriv, createDecipheriv } from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import type {
   MemoryNode, MemoryEdge, DataSource, Entity,
@@ -32,6 +33,46 @@ export class DatabaseService {
   private db!: Database.Database
   private dbPath: string
   private siteId!: string
+  private _encKey: Buffer | null = null
+
+  private encKey(): Buffer | null {
+    if (this._encKey) return this._encKey
+    const settings = this.getAllSettings()
+    if (!settings.encryption) return null
+    if (!settings.encryptionKey) {
+      const key = randomBytes(32).toString('hex')
+      this.db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run('encryptionKey', JSON.stringify(key))
+      this._encKey = Buffer.from(key, 'hex')
+    } else {
+      this._encKey = Buffer.from(settings.encryptionKey as string, 'hex')
+    }
+    return this._encKey
+  }
+
+  private encrypt(text: string): string {
+    const key = this.encKey()
+    if (!key) return text
+    const iv = randomBytes(12)
+    const cipher = createCipheriv('aes-256-gcm', key, iv)
+    const enc = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()])
+    const tag = cipher.getAuthTag()
+    return `enc:${iv.toString('hex')}:${tag.toString('hex')}:${enc.toString('hex')}`
+  }
+
+  private decrypt(text: string): string {
+    if (!text.startsWith('enc:')) return text
+    try {
+      const key = this.encKey()
+      if (!key) return text
+      const parts = text.split(':')
+      const iv = Buffer.from(parts[1], 'hex')
+      const tag = Buffer.from(parts[2], 'hex')
+      const data = Buffer.from(parts[3], 'hex')
+      const decipher = createDecipheriv('aes-256-gcm', key, iv)
+      decipher.setAuthTag(tag)
+      return decipher.update(data).toString('utf8') + decipher.final('utf8')
+    } catch { return text }
+  }
 
   constructor() {
     const userDataPath = app.getPath('userData')
@@ -303,6 +344,7 @@ export class DatabaseService {
       telemetry: false,
       contextPermissions: {},
       encryption: false,
+      allowedApps: { vscode: true, claude: true, external: false },
     }
 
     const upsert = this.db.prepare(
@@ -331,7 +373,7 @@ export class DatabaseService {
          timestamp, tags, entities, summary, metadata, site_id, version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      node.id, node.title, node.content, node.type,
+      node.id, node.title, this.encrypt(node.content), node.type,
       node.sourceId, node.sourceName, node.sourceType,
       node.timestamp, JSON.stringify(node.tags), JSON.stringify(node.entities),
       node.summary || null, JSON.stringify(node.metadata),
@@ -414,7 +456,7 @@ export class DatabaseService {
     return {
       id: row['id'] as string,
       title: row['title'] as string,
-      content: row['content'] as string,
+      content: this.decrypt(row['content'] as string),
       type: row['type'] as MemoryNode['type'],
       sourceId: row['source_id'] as string,
       sourceName: row['source_name'] as string,

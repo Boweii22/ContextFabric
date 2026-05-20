@@ -37,6 +37,11 @@ declare global {
       context: {
         export: (query: string, maxChunks?: number) => Promise<unknown>
       }
+      tokens: {
+        list: () => Promise<unknown>
+        revoke: (token: string) => Promise<unknown>
+        revokeAll: () => Promise<unknown>
+      }
       on: (channel: string, listener: (...args: unknown[]) => void) => () => void
       off: (channel: string, listener: (...args: unknown[]) => void) => void
     }

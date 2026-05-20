@@ -4,6 +4,7 @@ import type { DatabaseService } from '../services/database'
 import type { OllamaService } from '../services/ollama'
 import { SearchService } from '../services/search'
 import { IngestionService } from '../services/ingestion'
+import { listTokens, revokeToken, revokeAll } from '../api/tokenStore'
 import type { DataSource, AIQueryResult, AppSettings } from '../../shared/types'
 
 export function registerIpcHandlers(
@@ -301,6 +302,12 @@ export function registerIpcHandlers(
       score: r.score,
     }))
   })
+
+  // === PERMISSIONS / TOKENS ===
+
+  ipcMain.handle('tokens:list', () => listTokens())
+  ipcMain.handle('tokens:revoke', (_, token: string) => revokeToken(token))
+  ipcMain.handle('tokens:revoke-all', () => { revokeAll(); return true })
 
   // Restore file watchers for all ready sources (after app restart)
   ingestion.watchAllSources()

@@ -104,6 +104,16 @@ export interface AppSettings {
   telemetry: boolean
   contextPermissions: Record<string, ContextPermission>
   encryption: boolean
+  encryptionKey?: string
+  allowedApps: Record<string, boolean>  // app identifier → globally allowed
+}
+
+export interface ContextToken {
+  token: string
+  summary: string
+  expiresAt: number
+  createdAt: number
+  query?: string
 }
 
 export interface ContextPermission {

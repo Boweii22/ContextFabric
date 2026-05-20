@@ -58,6 +58,13 @@ const api = {
       ipcRenderer.invoke('context:export', query, maxChunks),
   },
 
+  // Token management
+  tokens: {
+    list: () => ipcRenderer.invoke('tokens:list'),
+    revoke: (token: string) => ipcRenderer.invoke('tokens:revoke', token),
+    revokeAll: () => ipcRenderer.invoke('tokens:revoke-all'),
+  },
+
   // Events
   on: (channel: string, listener: (...args: unknown[]) => void) => {
     ipcRenderer.on(channel, (_, ...args) => listener(...args))
