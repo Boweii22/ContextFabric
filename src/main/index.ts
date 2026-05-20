@@ -4,11 +4,13 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
 import { DatabaseService } from './services/database'
 import { OllamaService } from './services/ollama'
+import { IngestionService } from './services/ingestion'
 import { startApiServer } from './api/server'
 
 let mainWindow: BrowserWindow | null = null
 let db: DatabaseService
 let ollama: OllamaService
+let ingestion: IngestionService
 
 function createWindow(): void {
   nativeTheme.themeSource = 'dark'
@@ -67,7 +69,7 @@ async function initialize(): Promise<void> {
 
   ollama = new OllamaService()
 
-  registerIpcHandlers(db, ollama, mainWindow)
+  ingestion = registerIpcHandlers(db, ollama, () => mainWindow)
   startApiServer(db, 47821)
 }
 
@@ -90,6 +92,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', () => {
+  ingestion?.stopAllWatchers()
 })
 
 export { mainWindow }

@@ -1,396 +1,662 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import {
-  ReactFlow, type Node, type Edge, Background,
-  Controls, MiniMap, useNodesState, useEdgesState,
-  BackgroundVariant, type NodeProps, Handle, Position,
-  type EdgeProps, getBezierPath, MarkerType, Panel
-} from '@xyflow/react'
-import '@xyflow/react/dist/style.css'
-import { Search, X, Clock, Tag, GitBranch, Layers, Filter } from 'lucide-react'
+import { Search, X, Clock, Tag, GitBranch, RefreshCw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAppStore } from '../../store'
 import { getTypeColor, formatDate, truncate } from '../../lib/utils'
 import { cn } from '../../lib/utils'
 import type { MemoryNode } from '../../../../shared/types'
 
-// ─── Force simulation ────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface SimNode { id: string; x: number; y: number; vx: number; vy: number; mass: number }
-interface SimEdge { source: string; target: string; strength: number }
+interface GNode {
+  id: string
+  label: string
+  type: string
+  color: string
+  x: number
+  y: number
+  vx: number
+  vy: number
+  radius: number
+  connections: number
+  data?: MemoryNode
+}
 
-function runForceSimulation(
-  nodes: SimNode[],
-  edges: SimEdge[],
-  iterations = 120
-): SimNode[] {
-  const nodeMap = new Map(nodes.map(n => [n.id, { ...n }]))
-  const arr = Array.from(nodeMap.values())
+interface GEdge {
+  source: string
+  target: string
+  weight: number
+}
 
-  const centerX = 0, centerY = 0
-  const repulsion = 6000
-  const attraction = 0.04
-  const damping = 0.82
-  const centerGravity = 0.008
+// ─── Force simulation (runs every frame) ─────────────────────────────────────
 
-  for (let iter = 0; iter < iterations; iter++) {
-    const cooling = 1 - iter / iterations
+class ForceGraph {
+  nodes: GNode[] = []
+  edges: GEdge[] = []
+  alpha = 1
+  alphaDecay = 0.006   // slow decay = long alive feel
+  alphaMin = 0.001
+  velocityDecay = 0.55
 
-    // Repulsion between all pairs
-    for (let i = 0; i < arr.length; i++) {
-      for (let j = i + 1; j < arr.length; j++) {
-        const a = arr[i], b = arr[j]
-        const dx = b.x - a.x || 0.01
-        const dy = b.y - a.y || 0.01
-        const dist2 = dx * dx + dy * dy
-        const dist = Math.sqrt(dist2) || 0.1
-        const force = repulsion / dist2
-        const fx = (dx / dist) * force * cooling
-        const fy = (dy / dist) * force * cooling
-        a.vx -= fx / a.mass; a.vy -= fy / a.mass
-        b.vx += fx / b.mass; b.vy += fy / b.mass
+  private nodeMap = new Map<string, GNode>()
+
+  setData(nodes: GNode[], edges: GEdge[]) {
+    this.nodes = nodes
+    this.edges = edges
+    this.nodeMap = new Map(nodes.map(n => [n.id, n]))
+    this.alpha = 1
+  }
+
+  reheat(alpha = 0.4) { this.alpha = alpha }
+
+  tick() {
+    if (this.alpha < this.alphaMin) {
+      // Keep nodes gently breathing even at rest
+      this.gentleBreath()
+      return
+    }
+
+    const rep = 800
+    const idealLen = 120
+    const gravStrength = 0.012
+
+    // Repulsion (Barnes-Hut simplified: just brute-force for < 500 nodes)
+    const n = this.nodes
+    for (let i = 0; i < n.length; i++) {
+      for (let j = i + 1; j < n.length; j++) {
+        const a = n[i], b = n[j]
+        let dx = b.x - a.x, dy = b.y - a.y
+        const d2 = dx * dx + dy * dy
+        if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5 }
+        const d = Math.sqrt(d2) || 1
+        const f = (rep / d2) * this.alpha
+        a.vx -= (dx / d) * f
+        a.vy -= (dy / d) * f
+        b.vx += (dx / d) * f
+        b.vy += (dy / d) * f
       }
     }
 
     // Attraction along edges
-    for (const e of edges) {
-      const a = nodeMap.get(e.source), b = nodeMap.get(e.target)
+    for (const e of this.edges) {
+      const a = this.nodeMap.get(e.source)
+      const b = this.nodeMap.get(e.target)
       if (!a || !b) continue
       const dx = b.x - a.x, dy = b.y - a.y
-      const dist = Math.sqrt(dx * dx + dy * dy) || 0.1
-      const idealDist = 180
-      const force = (dist - idealDist) * attraction * e.strength
-      const fx = (dx / dist) * force
-      const fy = (dy / dist) * force
-      a.vx += fx; a.vy += fy
-      b.vx -= fx; b.vy -= fy
+      const d = Math.sqrt(dx * dx + dy * dy) || 1
+      const f = ((d - idealLen) * 0.06 * e.weight) * this.alpha
+      a.vx += (dx / d) * f; a.vy += (dy / d) * f
+      b.vx -= (dx / d) * f; b.vy -= (dy / d) * f
     }
 
     // Gravity toward center
-    for (const n of arr) {
-      n.vx += (centerX - n.x) * centerGravity
-      n.vy += (centerY - n.y) * centerGravity
-      n.vx *= damping; n.vy *= damping
-      n.x += n.vx; n.y += n.vy
+    for (const nd of this.nodes) {
+      nd.vx -= nd.x * gravStrength * this.alpha
+      nd.vy -= nd.y * gravStrength * this.alpha
+      nd.vx *= this.velocityDecay
+      nd.vy *= this.velocityDecay
+      nd.x += nd.vx
+      nd.y += nd.vy
     }
+
+    this.alpha *= (1 - this.alphaDecay)
   }
 
-  return arr
+  private gentleBreath() {
+    // Tiny random nudge so the graph never looks completely dead
+    for (const nd of this.nodes) {
+      nd.vx += (Math.random() - 0.5) * 0.08
+      nd.vy += (Math.random() - 0.5) * 0.08
+      nd.vx *= 0.92
+      nd.vy *= 0.92
+      nd.x += nd.vx
+      nd.y += nd.vy
+    }
+  }
 }
 
-// ─── Custom node ─────────────────────────────────────────────────────────────
+// ─── Main component ───────────────────────────────────────────────────────────
 
-function MemoryNodeComponent({ data, selected }: NodeProps) {
-  const d = data as { label: string; type: string; color: string; size: number; nodeData?: MemoryNode }
-  const color = d.color || getTypeColor(d.type)
-  const size = Math.max(d.size || 20, 16)
+export default function MemoryGraphPage() {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const rafRef = useRef<number>(0)
+  const sim = useRef(new ForceGraph())
 
-  return (
-    <motion.div
-      initial={{ scale: 0, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-      style={{ width: size * 5, minWidth: 100, maxWidth: 160 }}
-      className={cn(
-        'relative px-3 py-2 rounded-xl border cursor-pointer select-none transition-all duration-150',
-        selected ? 'ring-2' : ''
-      )}
-      style={{
-        background: selected
-          ? `linear-gradient(135deg, ${color}25, ${color}12)`
-          : 'rgba(13,17,23,0.92)',
-        border: `1px solid ${selected ? color : 'rgba(255,255,255,0.08)'}`,
-        boxShadow: selected
-          ? `0 0 16px ${color}60, 0 0 40px ${color}25`
-          : `0 0 6px ${color}18`,
-        width: Math.max(size * 5, 100),
-        minWidth: 100,
-        maxWidth: 160,
-      }}
-    >
-      <Handle type="target" position={Position.Top}
-        style={{ background: color, width: 6, height: 6, border: 'none', opacity: 0.6 }} />
+  // View state
+  const zoomRef = useRef(1)
+  const panRef = useRef({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1) // for UI display only
 
-      <div className="flex items-center gap-1.5 mb-0.5">
-        <motion.div
-          className="w-2 h-2 rounded-full shrink-0"
-          style={{ backgroundColor: color }}
-          animate={{ scale: [1, 1.3, 1], opacity: [0.7, 1, 0.7] }}
-          transition={{ duration: 2.5 + Math.random() * 2, repeat: Infinity, ease: 'easeInOut' }}
-        />
-        <span className="text-2xs font-semibold uppercase tracking-widest truncate"
-          style={{ color: `${color}cc` }}>
-          {d.type}
-        </span>
-      </div>
-      <div className="text-xs font-medium text-slate-200 leading-tight truncate">
-        {truncate(d.label, 28)}
-      </div>
+  // Interaction
+  const dragNode = useRef<GNode | null>(null)
+  const isPanning = useRef(false)
+  const lastMouse = useRef({ x: 0, y: 0 })
+  const hoveredNode = useRef<GNode | null>(null)
 
-      <Handle type="source" position={Position.Bottom}
-        style={{ background: color, width: 6, height: 6, border: 'none', opacity: 0.6 }} />
-    </motion.div>
-  )
-}
-
-// ─── Animated edge ────────────────────────────────────────────────────────────
-
-function AnimatedEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps) {
-  const [path] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
-  const edgeData = data as { weight?: number }
-  const w = edgeData?.weight || 0.5
-  const color = selected ? '#818CF8' : `rgba(99,102,241,${Math.max(0.08, w * 0.5)})`
-  const strokeW = selected ? 2 : 1
-
-  return (
-    <g>
-      <path d={path} fill="none" stroke={color} strokeWidth={strokeW}
-        style={{ filter: selected ? 'drop-shadow(0 0 4px rgba(99,102,241,0.6))' : undefined }} />
-      {selected && (
-        <path d={path} fill="none" stroke="rgba(99,102,241,0.3)" strokeWidth={6} />
-      )}
-    </g>
-  )
-}
-
-const nodeTypes = { memory: MemoryNodeComponent }
-const edgeTypes = { animated: AnimatedEdge }
-
-// ─── Main page ────────────────────────────────────────────────────────────────
-
-export default function MemoryGraphPage(): React.ReactElement {
-  const [nodes, setNodes, onNodesChange] = useNodesState([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  // UI state
   const [loading, setLoading] = useState(true)
   const [selectedNode, setSelectedNode] = useState<MemoryNode | null>(null)
-  const [filterType, setFilterType] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [totalNodes, setTotalNodes] = useState(0)
+  const [filterType, setFilterType] = useState<string | null>(null)
+  const [counts, setCounts] = useState({ nodes: 0, edges: 0 })
   const { setSelectedNodeId } = useAppStore()
 
-  useEffect(() => { loadGraph() }, [])
+  // ─── Load data ──────────────────────────────────────────────────────────────
 
-  async function loadGraph() {
+  const loadGraph = useCallback(async () => {
     setLoading(true)
+    setSelectedNode(null)
     try {
-      const graphState = await api.memory.getGraph() as {
+      const gs = await api.memory.getGraph() as {
         nodes: Array<{ id: string; label: string; type: string; color: string; size: number; data: MemoryNode }>
         edges: Array<{ id: string; source: string; target: string; weight: number }>
       }
+      if (!gs.nodes.length) { setLoading(false); return }
 
-      if (graphState.nodes.length === 0) {
-        setLoading(false)
-        return
-      }
+      setCounts({ nodes: gs.nodes.length, edges: gs.edges.length })
 
-      setTotalNodes(graphState.nodes.length)
+      const connCount = new Map<string, number>()
+      gs.edges.forEach(e => {
+        connCount.set(e.source, (connCount.get(e.source) ?? 0) + 1)
+        connCount.set(e.target, (connCount.get(e.target) ?? 0) + 1)
+      })
 
-      // Build sim nodes — heavier nodes stay more central
-      const simNodes: SimNode[] = graphState.nodes.map((n, i) => {
-        const angle = (i / graphState.nodes.length) * Math.PI * 2
-        const r = 300 + Math.random() * 200
+      const n = gs.nodes.length
+      const nodes: GNode[] = gs.nodes.map((nd, i) => {
+        const angle = (i / n) * Math.PI * 2
+        const r = Math.max(200, n * 10)
+        const conns = connCount.get(nd.id) ?? 0
         return {
-          id: n.id,
-          x: Math.cos(angle) * r,
-          y: Math.sin(angle) * r,
+          id: nd.id,
+          label: nd.label,
+          type: nd.type,
+          color: nd.color || getTypeColor(nd.type),
+          x: Math.cos(angle) * r + (Math.random() - 0.5) * 80,
+          y: Math.sin(angle) * r + (Math.random() - 0.5) * 80,
           vx: 0, vy: 0,
-          mass: 1 + (n.size || 20) / 20,
+          radius: Math.max(5, Math.min(14, 5 + conns * 1.2)),
+          connections: conns,
+          data: nd.data,
         }
       })
 
-      const simEdges: SimEdge[] = graphState.edges.slice(0, 300).map(e => ({
-        source: e.source, target: e.target, strength: e.weight || 0.5
+      const edges: GEdge[] = gs.edges.slice(0, 800).map(e => ({
+        source: e.source, target: e.target, weight: Math.max(0.1, e.weight ?? 0.5),
       }))
 
-      // Run force sim
-      const placed = runForceSimulation(simNodes, simEdges, 150)
-      const posMap = new Map(placed.map(n => [n.id, { x: n.x, y: n.y }]))
-
-      const flowNodes: Node[] = graphState.nodes.map(n => ({
-        id: n.id,
-        type: 'memory',
-        position: posMap.get(n.id) || { x: 0, y: 0 },
-        data: { label: n.label, type: n.type, color: n.color, size: n.size, nodeData: n.data },
-      }))
-
-      const flowEdges: Edge[] = graphState.edges.slice(0, 400).map(e => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        type: 'animated',
-        data: { weight: e.weight },
-        markerEnd: { type: MarkerType.ArrowClosed, width: 8, height: 8, color: 'rgba(99,102,241,0.3)' },
-      }))
-
-      setNodes(flowNodes)
-      setEdges(flowEdges)
-    } catch (err) {
-      console.error('Graph load failed:', err)
-    } finally {
+      sim.current.setData(nodes, edges)
+      centerView()
       setLoading(false)
+    } catch (e) {
+      console.error(e)
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadGraph() }, [])
+
+  // ─── Render loop ─────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (loading) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')!
+
+    const resize = () => {
+      canvas.width = canvas.offsetWidth * devicePixelRatio
+      canvas.height = canvas.offsetHeight * devicePixelRatio
+      ctx.scale(devicePixelRatio, devicePixelRatio)
+    }
+    resize()
+    const ro = new ResizeObserver(resize)
+    ro.observe(canvas)
+
+    const searchLower = search.toLowerCase()
+
+    function draw() {
+      const W = canvas.offsetWidth, H = canvas.offsetHeight
+      ctx.clearRect(0, 0, W, H)
+
+      ctx.save()
+      ctx.translate(panRef.current.x + W / 2, panRef.current.y + H / 2)
+      ctx.scale(zoomRef.current, zoomRef.current)
+
+      const nodes = sim.current.nodes
+      const edges = sim.current.edges
+      const nodeMap = new Map(nodes.map(n => [n.id, n]))
+
+      const isFiltered = filterType || searchLower
+      const matchNode = (nd: GNode) => {
+        if (filterType && nd.type !== filterType) return false
+        if (searchLower && !nd.label.toLowerCase().includes(searchLower)) return false
+        return true
+      }
+
+      // ── Edges ──
+      for (const e of edges) {
+        const a = nodeMap.get(e.source), b = nodeMap.get(e.target)
+        if (!a || !b) continue
+        const aMatch = !isFiltered || matchNode(a)
+        const bMatch = !isFiltered || matchNode(b)
+        const opacity = isFiltered
+          ? (aMatch && bMatch ? e.weight * 0.5 : 0.03)
+          : Math.max(0.04, e.weight * 0.3)
+
+        ctx.beginPath()
+        ctx.moveTo(a.x, a.y)
+
+        // Slight curve for web feel
+        const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.15
+        const my = (a.y + b.y) / 2 - (b.x - a.x) * 0.15
+        ctx.quadraticCurveTo(mx, my, b.x, b.y)
+
+        const isHovered = hoveredNode.current &&
+          (e.source === hoveredNode.current.id || e.target === hoveredNode.current.id)
+
+        if (isHovered) {
+          ctx.strokeStyle = `rgba(99,102,241,${Math.min(0.9, opacity * 3)})`
+          ctx.lineWidth = 1.5
+        } else {
+          ctx.strokeStyle = `rgba(99,102,241,${opacity})`
+          ctx.lineWidth = Math.max(0.3, e.weight * 0.8)
+        }
+        ctx.stroke()
+      }
+
+      // ── Nodes ──
+      for (const nd of nodes) {
+        const match = !isFiltered || matchNode(nd)
+        const isHov = hoveredNode.current?.id === nd.id
+        const isSel = selectedNode?.id === nd.id
+        const alpha = match ? 1 : 0.12
+
+        ctx.globalAlpha = alpha
+
+        // Glow
+        if (match && (isHov || isSel)) {
+          ctx.shadowColor = nd.color
+          ctx.shadowBlur = isSel ? 24 : 14
+        } else if (match) {
+          ctx.shadowColor = nd.color
+          ctx.shadowBlur = 6
+        } else {
+          ctx.shadowBlur = 0
+        }
+
+        const r = nd.radius * (isHov ? 1.3 : isSel ? 1.5 : 1)
+
+        // Outer ring for selected/hovered
+        if (isSel || isHov) {
+          ctx.beginPath()
+          ctx.arc(nd.x, nd.y, r + 5, 0, Math.PI * 2)
+          ctx.strokeStyle = nd.color + (isSel ? 'aa' : '55')
+          ctx.lineWidth = 1
+          ctx.stroke()
+        }
+
+        // Node fill
+        ctx.beginPath()
+        ctx.arc(nd.x, nd.y, r, 0, Math.PI * 2)
+        const grad = ctx.createRadialGradient(nd.x - r * 0.3, nd.y - r * 0.3, 0, nd.x, nd.y, r)
+        grad.addColorStop(0, nd.color + (isSel ? 'ff' : 'dd'))
+        grad.addColorStop(1, nd.color + '55')
+        ctx.fillStyle = grad
+        ctx.fill()
+
+        // Label — only when zoomed in enough or selected/hovered
+        const z = zoomRef.current
+        if ((z > 0.6 && match) || isSel || isHov) {
+          ctx.shadowBlur = 0
+          ctx.globalAlpha = Math.min(1, (z - 0.4) * 2) * alpha
+          ctx.fillStyle = isSel ? '#ffffff' : '#94A3B8'
+          ctx.font = `${Math.max(9, 10 / z)}px -apple-system,sans-serif`
+          ctx.textAlign = 'center'
+          ctx.fillText(truncate(nd.label, 18), nd.x, nd.y + r + 12 / z)
+        }
+
+        ctx.globalAlpha = 1
+        ctx.shadowBlur = 0
+      }
+
+      ctx.restore()
+      sim.current.tick()
+      rafRef.current = requestAnimationFrame(draw)
+    }
+
+    rafRef.current = requestAnimationFrame(draw)
+    return () => {
+      cancelAnimationFrame(rafRef.current)
+      ro.disconnect()
+    }
+  }, [loading, search, filterType, selectedNode])
+
+  // ─── View helpers ─────────────────────────────────────────────────────────
+
+  function centerView() {
+    panRef.current = { x: 0, y: 0 }
+    zoomRef.current = 0.8
+    setZoom(0.8)
+  }
+
+  function applyZoom(delta: number, cx?: number, cy?: number) {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const W = canvas.offsetWidth, H = canvas.offsetHeight
+    const oldZoom = zoomRef.current
+    const newZoom = Math.max(0.05, Math.min(4, oldZoom * (1 + delta)))
+
+    if (cx !== undefined && cy !== undefined) {
+      // Zoom toward cursor
+      const wx = (cx - W / 2 - panRef.current.x) / oldZoom
+      const wy = (cy - H / 2 - panRef.current.y) / oldZoom
+      panRef.current.x = cx - W / 2 - wx * newZoom
+      panRef.current.y = cy - H / 2 - wy * newZoom
+    }
+
+    zoomRef.current = newZoom
+    setZoom(newZoom)
+  }
+
+  // ─── Canvas → world coords ────────────────────────────────────────────────
+
+  function toWorld(cx: number, cy: number) {
+    const canvas = canvasRef.current!
+    const W = canvas.offsetWidth, H = canvas.offsetHeight
+    return {
+      x: (cx - W / 2 - panRef.current.x) / zoomRef.current,
+      y: (cy - H / 2 - panRef.current.y) / zoomRef.current,
     }
   }
 
-  const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    const nd = (node.data as { nodeData?: MemoryNode }).nodeData
-    if (nd) { setSelectedNode(nd); setSelectedNodeId(node.id) }
+  function nodeAt(cx: number, cy: number): GNode | null {
+    const { x, y } = toWorld(cx, cy)
+    let best: GNode | null = null, bestD = Infinity
+    for (const nd of sim.current.nodes) {
+      const d = Math.hypot(nd.x - x, nd.y - y)
+      if (d < nd.radius * 3 && d < bestD) { best = nd; bestD = d }
+    }
+    return best
+  }
+
+  // ─── Mouse events ─────────────────────────────────────────────────────────
+
+  const onWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const cx = e.clientX - rect.left
+    const cy = e.clientY - rect.top
+    const delta = -e.deltaY * 0.001 * (e.deltaMode === 1 ? 10 : 1)
+    applyZoom(delta, cx, cy)
   }, [])
 
-  const TYPE_FILTERS = ['conversation', 'document', 'code', 'note', 'decision']
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top
+    lastMouse.current = { x: cx, y: cy }
 
-  // Apply search + type filter to node visibility
-  const visibleNodes = nodes.map(n => {
-    const d = n.data as { label: string; type: string }
-    const matchType = !filterType || d.type === filterType
-    const matchSearch = !search || d.label.toLowerCase().includes(search.toLowerCase())
-    return { ...n, hidden: !matchType || !matchSearch }
-  })
+    const hit = nodeAt(cx, cy)
+    if (hit) {
+      dragNode.current = hit
+      hit.vx = 0; hit.vy = 0
+    } else {
+      isPanning.current = true
+    }
+  }, [])
+
+  const onMouseMove = useCallback((e: React.MouseEvent) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top
+    const dx = cx - lastMouse.current.x, dy = cy - lastMouse.current.y
+    lastMouse.current = { x: cx, y: cy }
+
+    if (dragNode.current) {
+      const nd = dragNode.current
+      const { x, y } = toWorld(cx, cy)
+      nd.x = x; nd.y = y
+      nd.vx = 0; nd.vy = 0
+      sim.current.reheat(0.3)
+    } else if (isPanning.current) {
+      panRef.current.x += dx
+      panRef.current.y += dy
+    } else {
+      hoveredNode.current = nodeAt(cx, cy)
+      canvasRef.current!.style.cursor = hoveredNode.current ? 'pointer' : 'grab'
+    }
+  }, [])
+
+  const onMouseUp = useCallback((e: React.MouseEvent) => {
+    if (dragNode.current) {
+      dragNode.current = null
+    } else if (isPanning.current) {
+      isPanning.current = false
+    } else {
+      const rect = canvasRef.current!.getBoundingClientRect()
+      const cx = e.clientX - rect.left, cy = e.clientY - rect.top
+      const hit = nodeAt(cx, cy)
+      if (hit?.data) {
+        setSelectedNode(prev => prev?.id === hit.id ? null : hit.data!)
+        setSelectedNodeId(hit.id)
+      } else {
+        setSelectedNode(null)
+      }
+    }
+  }, [])
+
+  const onMouseLeave = useCallback(() => {
+    dragNode.current = null
+    isPanning.current = false
+    hoveredNode.current = null
+  }, [])
+
+  // Touch support
+  const lastTouch = useRef<{ x: number; y: number; dist?: number } | null>(null)
+  const onTouchStart = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      const t = e.touches[0]
+      lastTouch.current = { x: t.clientX, y: t.clientY }
+      const rect = canvasRef.current!.getBoundingClientRect()
+      const hit = nodeAt(t.clientX - rect.left, t.clientY - rect.top)
+      if (hit) dragNode.current = hit
+      else isPanning.current = true
+    } else if (e.touches.length === 2) {
+      const dx = e.touches[1].clientX - e.touches[0].clientX
+      const dy = e.touches[1].clientY - e.touches[0].clientY
+      lastTouch.current = {
+        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+        dist: Math.hypot(dx, dy),
+      }
+    }
+  }, [])
+
+  const onTouchMove = useCallback((e: React.TouchEvent) => {
+    e.preventDefault()
+    if (e.touches.length === 1 && lastTouch.current) {
+      const t = e.touches[0]
+      const dx = t.clientX - lastTouch.current.x
+      const dy = t.clientY - lastTouch.current.y
+      if (dragNode.current) {
+        const rect = canvasRef.current!.getBoundingClientRect()
+        const { x, y } = toWorld(t.clientX - rect.left, t.clientY - rect.top)
+        dragNode.current.x = x; dragNode.current.y = y
+      } else {
+        panRef.current.x += dx; panRef.current.y += dy
+      }
+      lastTouch.current = { x: t.clientX, y: t.clientY }
+    } else if (e.touches.length === 2 && lastTouch.current?.dist) {
+      const dx = e.touches[1].clientX - e.touches[0].clientX
+      const dy = e.touches[1].clientY - e.touches[0].clientY
+      const dist = Math.hypot(dx, dy)
+      const delta = (dist - lastTouch.current.dist) / lastTouch.current.dist * 0.8
+      applyZoom(delta)
+      lastTouch.current.dist = dist
+    }
+  }, [])
+
+  const onTouchEnd = useCallback(() => {
+    dragNode.current = null; isPanning.current = false; lastTouch.current = null
+  }, [])
+
+  const TYPE_FILTERS = [
+    { key: 'conversation', label: 'Chat' },
+    { key: 'document', label: 'Docs' },
+    { key: 'code', label: 'Code' },
+    { key: 'decision', label: 'Decisions' },
+  ]
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Toolbar */}
-      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-white/[0.06] shrink-0 bg-cosmos-950/40">
-        <div className="flex items-center gap-2">
-          <GitBranch className="w-4 h-4 text-indigo-400" />
-          <span className="text-sm font-semibold text-white">Memory Graph</span>
-          {totalNodes > 0 && (
-            <span className="text-2xs text-slate-600 bg-cosmos-700/50 px-1.5 py-0.5 rounded-full">
-              {totalNodes} nodes
-            </span>
-          )}
-        </div>
+      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-white/[0.05] shrink-0 bg-cosmos-950/70 backdrop-blur-md">
+        <GitBranch className="w-4 h-4 text-indigo-400" />
+        <span className="text-sm font-semibold text-white">Memory Graph</span>
+        {counts.nodes > 0 && (
+          <span className="text-2xs text-slate-600 bg-white/[0.04] px-2 py-0.5 rounded-full">
+            {counts.nodes} nodes · {counts.edges} links
+          </span>
+        )}
 
-        <div className="w-px h-4 bg-white/[0.08]" />
+        <div className="w-px h-4 bg-white/[0.06]" />
 
-        {/* Search */}
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500" />
-          <input
-            value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Search nodes…"
-            className="w-44 bg-cosmos-800 border border-white/[0.06] rounded-lg pl-7 pr-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500/40"
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Filter…"
+            className="w-36 bg-white/[0.04] border border-white/[0.06] rounded-lg pl-7 pr-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500/40 transition-colors"
           />
         </div>
 
-        {/* Type filters */}
-        <div className="flex items-center gap-1">
-          <Filter className="w-3 h-3 text-slate-600" />
-          {TYPE_FILTERS.map(type => (
-            <button key={type} onClick={() => setFilterType(filterType === type ? null : type)}
-              className="px-2 py-1 rounded-lg text-2xs font-medium transition-all capitalize"
-              style={filterType === type
-                ? { backgroundColor: `${getTypeColor(type)}20`, color: getTypeColor(type) }
-                : { color: '#64748b' }}
-            >
-              {type}
-            </button>
-          ))}
-        </div>
+        {TYPE_FILTERS.map(f => (
+          <button key={f.key}
+            onClick={() => setFilterType(filterType === f.key ? null : f.key)}
+            className="px-2.5 py-1 rounded-lg text-2xs font-medium transition-all duration-150"
+            style={filterType === f.key
+              ? { background: `${getTypeColor(f.key)}20`, color: getTypeColor(f.key) }
+              : { color: '#475569' }}
+          >
+            {f.label}
+          </button>
+        ))}
 
         <div className="flex-1" />
-        <span className="text-2xs text-slate-600">{edges.length} connections</span>
+
+        {/* Zoom controls */}
+        <div className="flex items-center gap-1 bg-white/[0.04] border border-white/[0.06] rounded-lg px-1 py-0.5">
+          <button onClick={() => applyZoom(-0.25)}
+            className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+            <ZoomOut className="w-3 h-3" />
+          </button>
+          <span className="text-2xs text-slate-500 w-10 text-center">{Math.round(zoom * 100)}%</span>
+          <button onClick={() => applyZoom(0.25)}
+            className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+            <ZoomIn className="w-3 h-3" />
+          </button>
+        </div>
+
+        <button onClick={centerView}
+          className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-white border border-white/[0.06] rounded-lg transition-all hover:border-white/[0.12]">
+          <Maximize2 className="w-3 h-3" />
+        </button>
+
         <button onClick={loadGraph}
-          className="text-2xs text-slate-500 hover:text-slate-300 border border-white/[0.06] px-2.5 py-1.5 rounded-lg transition-all hover:border-white/[0.12]">
-          Refresh
+          className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-white border border-white/[0.06] rounded-lg transition-all hover:border-white/[0.12]">
+          <RefreshCw className="w-3 h-3" />
         </button>
       </div>
 
-      {/* Graph canvas */}
-      <div className="flex-1 relative overflow-hidden">
+      {/* Canvas area */}
+      <div className="flex-1 relative overflow-hidden bg-cosmos-950">
+        {/* Ambient orbs */}
+        <div className="absolute inset-0 pointer-events-none">
+          <div className="absolute w-[500px] h-[500px] rounded-full blur-[120px] opacity-[0.07]"
+            style={{ background: 'radial-gradient(circle,#6366F1,transparent)', left: '5%', top: '10%' }} />
+          <div className="absolute w-[400px] h-[400px] rounded-full blur-[100px] opacity-[0.05]"
+            style={{ background: 'radial-gradient(circle,#8B5CF6,transparent)', right: '10%', bottom: '15%' }} />
+          <div className="absolute w-[300px] h-[300px] rounded-full blur-[80px] opacity-[0.04]"
+            style={{ background: 'radial-gradient(circle,#06B6D4,transparent)', left: '55%', top: '55%' }} />
+        </div>
+
         {loading ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
-            {/* Animated graph skeleton */}
-            <div className="relative w-32 h-32">
-              {[0, 1, 2, 3, 4].map(i => (
-                <motion.div
-                  key={i}
-                  className="absolute w-4 h-4 rounded-full bg-indigo-500/40 border border-indigo-400/60"
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">
+            <div className="relative w-24 h-24">
+              {[0,1,2,3,4,5].map(i => (
+                <motion.div key={i}
+                  className="absolute w-2.5 h-2.5 rounded-full"
                   style={{
-                    left: `${50 + 35 * Math.cos((i / 5) * Math.PI * 2)}%`,
-                    top: `${50 + 35 * Math.sin((i / 5) * Math.PI * 2)}%`,
+                    left: `${50 + 40 * Math.cos(i / 6 * Math.PI * 2)}%`,
+                    top: `${50 + 40 * Math.sin(i / 6 * Math.PI * 2)}%`,
                     translateX: '-50%', translateY: '-50%',
+                    background: getTypeColor(['conversation','document','code','decision','note','entity'][i]),
                   }}
-                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
-                  transition={{ duration: 1.5, delay: i * 0.15, repeat: Infinity }}
+                  animate={{ scale: [0.5,1.4,0.5], opacity: [0.3,1,0.3] }}
+                  transition={{ duration: 1.6, delay: i*0.18, repeat: Infinity, ease: 'easeInOut' }}
                 />
               ))}
-              <motion.div
-                className="absolute inset-0 rounded-full border border-indigo-500/20"
-                animate={{ scale: [1, 1.1, 1], opacity: [0.2, 0.5, 0.2] }}
+              <motion.div className="absolute inset-0 rounded-full border border-indigo-500/20"
+                animate={{ scale: [0.8,1.2,0.8], opacity: [0,0.5,0] }}
                 transition={{ duration: 2, repeat: Infinity }}
               />
             </div>
-            <p className="text-sm text-slate-400">Computing layout…</p>
-          </div>
-        ) : nodes.length === 0 ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-            <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 flex items-center justify-center">
-              <GitBranch className="w-8 h-8 text-indigo-400" />
+            <div className="text-center">
+              <p className="text-sm font-medium text-slate-300">Building your web</p>
+              <p className="text-xs text-slate-600 mt-1">Running force simulation…</p>
             </div>
-            <p className="text-base font-semibold text-white">No graph yet</p>
-            <p className="text-sm text-slate-500">Sync a source to build your knowledge graph</p>
+          </div>
+        ) : sim.current.nodes.length === 0 ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
+            <motion.div animate={{ y: [0,-8,0] }} transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+              className="w-16 h-16 rounded-2xl bg-indigo-500/10 flex items-center justify-center">
+              <GitBranch className="w-8 h-8 text-indigo-400" />
+            </motion.div>
+            <p className="text-sm font-semibold text-white">No graph yet</p>
+            <p className="text-xs text-slate-500">Sync a source to build your knowledge graph</p>
           </div>
         ) : (
-          <ReactFlow
-            nodes={visibleNodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodeClick={handleNodeClick}
-            nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
-            fitView
-            fitViewOptions={{ padding: 0.15 }}
-            minZoom={0.05}
-            maxZoom={2.5}
-            attributionPosition="bottom-left"
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={28} size={1} color="rgba(255,255,255,0.03)" />
-            <Controls showInteractive={false} style={{
-              background: 'rgba(13,17,23,0.9)', border: '1px solid rgba(255,255,255,0.06)',
-              borderRadius: 10, gap: 2
-            }} />
-            <MiniMap
-              nodeColor={n => (n.data as { color: string }).color || '#6366F1'}
-              maskColor="rgba(4,6,13,0.8)"
-              style={{
-                background: 'rgba(8,11,20,0.9)', border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: 10
-              }}
-            />
+          <canvas
+            ref={canvasRef}
+            className="w-full h-full"
+            style={{ cursor: 'grab' }}
+            onWheel={onWheel}
+            onMouseDown={onMouseDown}
+            onMouseMove={onMouseMove}
+            onMouseUp={onMouseUp}
+            onMouseLeave={onMouseLeave}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
+          />
+        )}
 
-            {/* Floating legend */}
-            <Panel position="top-right" style={{ margin: 8 }}>
-              <div className="bg-cosmos-900/90 border border-white/[0.06] rounded-xl p-3 backdrop-blur-sm">
-                <p className="text-2xs font-medium text-slate-500 uppercase tracking-wider mb-2">Node types</p>
-                {['conversation', 'document', 'code', 'decision'].map(t => (
-                  <div key={t} className="flex items-center gap-2 mb-1.5">
-                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getTypeColor(t) }} />
-                    <span className="text-2xs text-slate-400 capitalize">{t}</span>
-                  </div>
-                ))}
-              </div>
-            </Panel>
-          </ReactFlow>
+        {/* Zoom hint */}
+        {!loading && sim.current.nodes.length > 0 && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-2xs text-slate-700 pointer-events-none">
+            Scroll to zoom · Drag to pan · Click node for details
+          </div>
         )}
 
         {/* Node detail panel */}
         <AnimatePresence>
           {selectedNode && (
             <motion.div
-              initial={{ opacity: 0, x: 20, scale: 0.97 }}
+              initial={{ opacity: 0, x: 16, scale: 0.97 }}
               animate={{ opacity: 1, x: 0, scale: 1 }}
-              exit={{ opacity: 0, x: 20, scale: 0.97 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-              className="absolute right-3 top-3 bottom-3 w-72 bg-cosmos-800/95 backdrop-blur-xl border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col shadow-elevated"
+              exit={{ opacity: 0, x: 16, scale: 0.97 }}
+              transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+              className="absolute right-3 top-3 bottom-3 w-72 flex flex-col rounded-2xl overflow-hidden"
+              style={{
+                background: 'rgba(8,11,20,0.94)',
+                backdropFilter: 'blur(24px)',
+                border: '1px solid rgba(255,255,255,0.07)',
+                boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
+              }}
             >
-              <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
+              <div className="flex items-center justify-between px-4 py-3.5 border-b border-white/[0.06]">
                 <div className="flex items-center gap-2">
-                  <motion.div
-                    className="w-2.5 h-2.5 rounded-full"
-                    style={{ backgroundColor: getTypeColor(selectedNode.type) }}
-                    animate={{ scale: [1, 1.3, 1] }}
+                  <motion.div className="w-3 h-3 rounded-full"
+                    style={{ backgroundColor: getTypeColor(selectedNode.type), boxShadow: `0 0 8px ${getTypeColor(selectedNode.type)}80` }}
+                    animate={{ scale: [1,1.25,1], opacity: [0.7,1,0.7] }}
                     transition={{ duration: 2, repeat: Infinity }}
                   />
                   <span className="text-xs font-semibold text-white capitalize">{selectedNode.type}</span>
@@ -401,29 +667,24 @@ export default function MemoryGraphPage(): React.ReactElement {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto scrollbar-none p-4 space-y-3">
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-none">
                 <h3 className="font-semibold text-white text-sm leading-snug">{selectedNode.title}</h3>
-
-                <div className="flex items-center gap-3 text-xs text-slate-500">
-                  <div className="flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    {formatDate(selectedNode.timestamp)}
-                  </div>
-                  <div className="text-slate-700">·</div>
-                  <div className="truncate">{selectedNode.sourceName}</div>
+                <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
+                  <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatDate(selectedNode.timestamp)}</span>
+                  <span className="text-slate-700">·</span>
+                  <span className="truncate max-w-[140px]">{selectedNode.sourceName}</span>
                 </div>
 
                 {selectedNode.summary && (
-                  <div className="p-3 rounded-xl bg-indigo-500/5 border border-indigo-500/15">
+                  <div className="p-3 rounded-xl border"
+                    style={{ background: `${getTypeColor(selectedNode.type)}08`, borderColor: `${getTypeColor(selectedNode.type)}20` }}>
                     <p className="text-xs text-slate-300 leading-relaxed">{selectedNode.summary}</p>
                   </div>
                 )}
 
                 <div>
                   <div className="text-2xs font-medium text-slate-600 uppercase tracking-wider mb-1.5">Content</div>
-                  <p className="text-xs text-slate-400 leading-relaxed whitespace-pre-wrap">
-                    {truncate(selectedNode.content, 500)}
-                  </p>
+                  <p className="text-xs text-slate-400 leading-relaxed whitespace-pre-wrap">{truncate(selectedNode.content, 500)}</p>
                 </div>
 
                 {selectedNode.entities.length > 0 && (
@@ -432,9 +693,10 @@ export default function MemoryGraphPage(): React.ReactElement {
                       <Tag className="w-3 h-3 text-slate-600" />
                       <span className="text-2xs font-medium text-slate-600 uppercase tracking-wider">Entities</span>
                     </div>
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-wrap gap-1.5">
                       {selectedNode.entities.map(e => (
-                        <span key={e} className="text-2xs px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                        <span key={e} className="text-2xs px-2 py-0.5 rounded-full border"
+                          style={{ background: `${getTypeColor(selectedNode.type)}10`, borderColor: `${getTypeColor(selectedNode.type)}30`, color: getTypeColor(selectedNode.type) }}>
                           {e}
                         </span>
                       ))}

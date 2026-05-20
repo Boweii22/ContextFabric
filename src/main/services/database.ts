@@ -48,6 +48,15 @@ export class DatabaseService {
     this.db.pragma('foreign_keys = ON')
     this.runMigrations()
     this.siteId = this.getOrCreateSiteId()
+    this.resetStuckSources()
+  }
+
+  // Any source left as 'indexing' from a previous crashed/killed sync
+  // is reset to 'idle' so the UI doesn't show phantom indexing on restart
+  private resetStuckSources(): void {
+    this.db.prepare(
+      "UPDATE data_sources SET status = 'idle' WHERE status = 'indexing'"
+    ).run()
   }
 
   getSiteId(): string { return this.siteId }
@@ -428,6 +437,20 @@ export class DatabaseService {
     `).run(nodeId, buffer, embedding.length, model)
   }
 
+  batchSaveEmbeddings(items: Array<{ nodeId: string; embedding: number[] }>, model: string): void {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO memory_embeddings (node_id, embedding, dimensions, model)
+      VALUES (?, ?, ?, ?)
+    `)
+    const tx = this.db.transaction(() => {
+      for (const { nodeId, embedding } of items) {
+        const buffer = Buffer.from(new Float32Array(embedding).buffer)
+        stmt.run(nodeId, buffer, embedding.length, model)
+      }
+    })
+    tx()
+  }
+
   getEmbedding(nodeId: string): number[] | null {
     const row = this.db.prepare(
       'SELECT embedding FROM memory_embeddings WHERE node_id = ?'
@@ -587,6 +610,13 @@ export class DatabaseService {
       entity.firstSeen, entity.lastSeen, JSON.stringify(entity.nodeIds),
       entity.summary || null, this.siteId, version
     )
+  }
+
+  batchUpsertEntities(entities: Entity[]): void {
+    const tx = this.db.transaction(() => {
+      for (const entity of entities) this.upsertEntity(entity)
+    })
+    tx()
   }
 
   getEntities(limit = 100): Entity[] {

@@ -9,8 +9,8 @@ import type { DataSource, AIQueryResult, AppSettings } from '../../shared/types'
 export function registerIpcHandlers(
   db: DatabaseService,
   ollama: OllamaService,
-  mainWindow: BrowserWindow | null
-): void {
+  getWindow: () => BrowserWindow | null
+): IngestionService {
   const search = new SearchService(db, ollama)
   const ingestion = new IngestionService(db, ollama)
 
@@ -179,6 +179,7 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('sources:remove', async (_, id: string) => {
+    ingestion.stopWatcher(id)
     db.deleteSource(id)
     return true
   })
@@ -188,13 +189,13 @@ export function registerIpcHandlers(
     if (!source) throw new Error('Source not found')
 
     const onStatus = (status: unknown) => {
-      mainWindow?.webContents.send('processing:status', status)
+      getWindow()?.webContents.send('processing:status', status)
     }
 
     ingestion.ingestSource(source, onStatus).then(count => {
-      mainWindow?.webContents.send('source:synced', { id, count })
+      getWindow()?.webContents.send('source:synced', { id, count })
     }).catch(err => {
-      mainWindow?.webContents.send('source:error', { id, error: err.message })
+      getWindow()?.webContents.send('source:error', { id, error: err.message })
     })
 
     return { started: true }
@@ -257,6 +258,11 @@ export function registerIpcHandlers(
       score: r.score,
     }))
   })
+
+  // Restore file watchers for all ready sources (after app restart)
+  ingestion.watchAllSources()
+
+  return ingestion
 }
 
 function expandQuery(query: string): string[] {

@@ -30,11 +30,15 @@ export default function DashboardPage(): React.ReactElement {
     loadDashboardData()
   }, [])
 
-  // Refresh when any source finishes syncing
+  // Only refresh when a source transitions FROM indexing TO ready
+  // — not on every sources change (which fires on every app load)
+  const prevSyncingRef = React.useRef(false)
   useEffect(() => {
-    const hasSyncing = sources.some(s => s.status === 'indexing')
-    const allReady = sources.length > 0 && sources.every(s => s.status !== 'indexing')
-    if (allReady) loadDashboardData()
+    const isSyncing = sources.some(s => s.status === 'indexing')
+    if (prevSyncingRef.current && !isSyncing && sources.length > 0) {
+      loadDashboardData()
+    }
+    prevSyncingRef.current = isSyncing
   }, [sources])
 
   async function loadDashboardData() {

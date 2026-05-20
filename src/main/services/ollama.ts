@@ -126,7 +126,7 @@ export class OllamaService {
       } else {
         console.warn('[Ollama] Embed failed, using fallback:', status)
       }
-      return this.fallbackEmbed(text)
+      return this.fastEmbed(text)
     }
   }
 
@@ -353,7 +353,7 @@ JSON response:`
     }
   }
 
-  private fallbackEmbed(text: string): number[] {
+  fastEmbed(text: string): number[] {
     const dims = 64
     const embedding = new Array(dims).fill(0)
     const words = text.toLowerCase().split(/\s+/)
@@ -367,7 +367,7 @@ JSON response:`
     return embedding.map(v => v / magnitude)
   }
 
-  private simpleEntityExtract(text: string): Array<{ name: string; type: string }> {
+  simpleEntityExtract(text: string): Array<{ name: string; type: string }> {
     const tech = ['react','node','typescript','python','postgres','redis','docker',
       'kubernetes','aws','gcp','firebase','supabase','graphql','mongodb',
       'elasticsearch','nginx','express','fastapi','prisma','sqlite',
