@@ -70,7 +70,7 @@ async function initialize(): Promise<void> {
   ollama = new OllamaService()
 
   ingestion = registerIpcHandlers(db, ollama, () => mainWindow)
-  startApiServer(db, 47821)
+  startApiServer(db, ollama, 47821)
 }
 
 app.whenReady().then(async () => {
