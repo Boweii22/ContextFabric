@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
-  Send, Brain, Sparkles, Clock, ChevronRight,
+  Send, Brain, Sparkles, Clock, ChevronRight, ChevronDown,
   Copy, RotateCcw, Zap, BookOpen, Check, AlertTriangle, GitBranch
 } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -25,6 +25,67 @@ function renderWithCitations(text: string): React.ReactNode {
     }
     return part
   })
+}
+
+interface ReasoningStep {
+  label: string
+  detail: string
+  status: 'complete' | 'warning' | 'empty'
+}
+
+function buildReasoningSteps(result: AIQueryResult): ReasoningStep[] {
+  const sourceNames = [...new Set(
+    result.sources
+      .map(source => source.node?.sourceName || (source as unknown as Record<string, unknown>)['sourceName'])
+      .filter(Boolean)
+      .map(String)
+  )]
+  const topSource = result.sources[0]
+  const topTitle = topSource?.node?.title || (topSource as unknown as Record<string, unknown> | undefined)?.['title']
+  const topScore = topSource ? `${Math.round(topSource.score * 100)}%` : '0%'
+
+  return [
+    {
+      label: 'Searched memory',
+      detail: result.sources.length > 0
+        ? `Found ${result.sources.length} relevant memory node${result.sources.length === 1 ? '' : 's'} across ${sourceNames.length || 1} source${sourceNames.length === 1 ? '' : 's'}.`
+        : 'No indexed memory nodes matched this query.',
+      status: result.sources.length > 0 ? 'complete' : 'empty',
+    },
+    {
+      label: 'Ranked source evidence',
+      detail: topTitle
+        ? `Top match: "${String(topTitle)}" with ${topScore} relevance.`
+        : 'No source evidence was available for ranking.',
+      status: topTitle ? 'complete' : 'empty',
+    },
+    {
+      label: 'Checked decision history',
+      detail: result.decisionChain?.length
+        ? `Matched ${result.decisionChain.length} related decision${result.decisionChain.length === 1 ? '' : 's'} from the timeline.`
+        : 'No related timeline decisions were attached to this answer.',
+      status: result.decisionChain?.length ? 'complete' : 'empty',
+    },
+    {
+      label: 'Looked for conflicts',
+      detail: result.conflicts?.length
+        ? `Found ${result.conflicts.length} possible conflict${result.conflicts.length === 1 ? '' : 's'} in the retrieved context.`
+        : 'No conflicting claims were detected in the retrieved context.',
+      status: result.conflicts?.length ? 'warning' : 'complete',
+    },
+    {
+      label: 'Linked entities',
+      detail: result.entities.length > 0
+        ? `Linked ${result.entities.slice(0, 6).join(', ')}${result.entities.length > 6 ? ` and ${result.entities.length - 6} more` : ''}.`
+        : 'No named entities were attached to this result.',
+      status: result.entities.length > 0 ? 'complete' : 'empty',
+    },
+    {
+      label: 'Estimated confidence',
+      detail: `Final match confidence is ${result.confidence.toFixed(0)}% based on search score and retrieved evidence.`,
+      status: result.confidence > 40 ? 'complete' : 'warning',
+    },
+  ]
 }
 
 const EXAMPLE_QUERIES = [
@@ -54,6 +115,7 @@ export default function QueryPage(): React.ReactElement {
   const currentQueryRef = useRef<string>('')
   const [displayedQuery, setDisplayedQuery] = useState<string>('')
   const [streamingText, setStreamingText] = useState('')
+  const [reasoningOpen, setReasoningOpen] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // Subscribe to streaming tokens from the main process
@@ -90,6 +152,7 @@ export default function QueryPage(): React.ReactElement {
     setIsQuerying(true)
     setQueryResult(null)
     setActiveSource(null)
+    setReasoningOpen(false)
 
     try {
       const result = await api.memory.query(query) as AIQueryResult
@@ -113,7 +176,7 @@ export default function QueryPage(): React.ReactElement {
     }
   }
 
-  function copyAnswer() {
+function copyAnswer() {
     const text = queryResult?.answer
     if (!text) return
     const fallback = () => {
@@ -331,13 +394,11 @@ export default function QueryPage(): React.ReactElement {
 
                       {/* Reasoning */}
                       {queryResult.reasoning && (
-                        <div className="px-3 py-2 rounded-xl bg-cosmos-700/40 border border-white/[0.04] mb-2">
-                          <div className="flex items-center gap-1.5 mb-1">
-                            <Zap className="w-3 h-3 text-slate-600" />
-                            <span className="text-2xs text-slate-600 uppercase tracking-wide font-medium">Context</span>
-                          </div>
-                          <p className="text-xs text-slate-500 leading-relaxed">{queryResult.reasoning}</p>
-                        </div>
+                        <ReasoningStepsPanel
+                          result={queryResult}
+                          open={reasoningOpen}
+                          onToggle={() => setReasoningOpen(v => !v)}
+                        />
                       )}
 
                       {/* Entities */}
@@ -525,6 +586,80 @@ export default function QueryPage(): React.ReactElement {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function ReasoningStepsPanel({
+  result,
+  open,
+  onToggle,
+}: {
+  result: AIQueryResult
+  open: boolean
+  onToggle: () => void
+}) {
+  const steps = buildReasoningSteps(result)
+  const completeCount = steps.filter(step => step.status === 'complete').length
+
+  return (
+    <div className="rounded-xl bg-cosmos-700/40 border border-white/[0.04] mb-2 overflow-hidden">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.03] transition-colors"
+        aria-expanded={open}
+      >
+        <Zap className="w-3 h-3 text-violet-400 shrink-0" />
+        <span className="text-2xs text-violet-400 uppercase tracking-wide font-medium">
+          Reasoning steps
+        </span>
+        <span className="text-2xs text-slate-600 ml-auto">
+          {completeCount}/{steps.length} complete
+        </span>
+        <ChevronDown className={cn(
+          'w-3.5 h-3.5 text-slate-600 transition-transform',
+          open && 'rotate-180'
+        )} />
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div className="px-3 pb-3 pt-1 border-t border-white/[0.04]">
+              {result.reasoning && (
+                <p className="text-xs text-slate-500 leading-relaxed mb-3">
+                  {result.reasoning}
+                </p>
+              )}
+
+              <div className="space-y-2">
+                {steps.map((step, index) => (
+                  <div key={step.label} className="flex items-start gap-2">
+                    <div className={cn(
+                      'w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 border text-2xs font-semibold',
+                      step.status === 'complete' && 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400',
+                      step.status === 'warning' && 'bg-amber-500/10 border-amber-500/25 text-amber-400',
+                      step.status === 'empty' && 'bg-slate-500/10 border-white/[0.06] text-slate-600'
+                    )}>
+                      {step.status === 'complete' ? <Check className="w-3 h-3" /> : index + 1}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-slate-300">{step.label}</div>
+                      <p className="text-xs text-slate-500 leading-relaxed">{step.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
