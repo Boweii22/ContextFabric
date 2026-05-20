@@ -4,13 +4,20 @@ import { useNavigate } from 'react-router-dom'
 import {
   Sparkles, ArrowRight, Clock, GitBranch, MessageSquare,
   TrendingUp, Zap, Database, Brain, ChevronRight, Search,
-  Activity, Circle
+  Activity, Circle, Folder, Tag
 } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { api } from '../../lib/api'
 import { formatDate, truncate, getTypeColor } from '../../lib/utils'
 import { cn } from '../../lib/utils'
-import type { SearchResult } from '../../../../shared/types'
+import type { SearchResult, DataSource, TimelineEvent } from '../../../../shared/types'
+
+interface SourceSummary {
+  source: DataSource
+  topEntities: Array<{ name: string; count: number }>
+  decisions: TimelineEvent[]
+  nodeTypes: Record<string, number>
+}
 
 const QUICK_QUERIES = [
   "What architecture decisions did I make recently?",
@@ -25,6 +32,7 @@ export default function DashboardPage(): React.ReactElement {
   const { stats, sources, timeline, setTimeline, setStats, isQuerying } = useAppStore()
   const [quickQuery, setQuickQuery] = useState('')
   const [recentNodes, setRecentNodes] = useState<SearchResult[]>([])
+  const [sourceSummaries, setSourceSummaries] = useState<SourceSummary[]>([])
 
   useEffect(() => {
     loadDashboardData()
@@ -43,7 +51,6 @@ export default function DashboardPage(): React.ReactElement {
 
   async function loadDashboardData() {
     try {
-      // Empty string triggers direct getNodes(8) by timestamp in IPC handler
       const [nodes, freshTimeline, freshStats] = await Promise.all([
         api.memory.search('', 8),
         api.memory.getTimeline(6),
@@ -56,6 +63,18 @@ export default function DashboardPage(): React.ReactElement {
       // ignore on initial load when db is empty
     }
   }
+
+  async function loadSourceSummaries() {
+    const readySources = sources.filter(s => s.status === 'ready')
+    const summaries = await Promise.all(
+      readySources.map(s => api.sources.summary(s.id).catch(() => null))
+    )
+    setSourceSummaries(summaries.filter(Boolean) as SourceSummary[])
+  }
+
+  useEffect(() => {
+    if (sources.some(s => s.status === 'ready')) loadSourceSummaries()
+  }, [sources])
 
   async function handleQuery(q: string) {
     if (!q.trim()) return
@@ -212,6 +231,75 @@ export default function DashboardPage(): React.ReactElement {
           </motion.div>
         )}
 
+        {/* Project Overview */}
+        {sourceSummaries.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+            className="mb-6"
+          >
+            <div className="flex items-center gap-2 mb-3">
+              <Folder className="w-4 h-4 text-slate-500" />
+              <h2 className="text-sm font-semibold text-white">Project Overview</h2>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {sourceSummaries.map((summary, i) => (
+                <motion.div
+                  key={summary.source.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.25 + i * 0.05 }}
+                  className="surface-card p-4 cursor-pointer hover:border-indigo-500/25 transition-all"
+                  onClick={() => navigate('/sources')}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: summary.source.color }} />
+                      <div>
+                        <div className="text-sm font-semibold text-white">{summary.source.name}</div>
+                        <div className="text-2xs text-slate-600">{summary.source.nodeCount} nodes · {summary.source.type.replace('_', ' ')}</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
+                  </div>
+
+                  {/* Node type breakdown */}
+                  <div className="flex gap-1.5 mb-3 flex-wrap">
+                    {Object.entries(summary.nodeTypes).map(([type, count]) => (
+                      <span key={type} className="text-2xs px-1.5 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.06] text-slate-500">
+                        {count} {type}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Top entities */}
+                  {summary.topEntities.length > 0 && (
+                    <div className="flex items-start gap-1.5 flex-wrap">
+                      <Tag className="w-3 h-3 text-slate-600 shrink-0 mt-0.5" />
+                      {summary.topEntities.slice(0, 5).map(e => (
+                        <span key={e.name} className="text-2xs px-1.5 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400">
+                          {e.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Recent decision */}
+                  {summary.decisions[0] && (
+                    <div className="mt-3 pt-3 border-t border-white/[0.04]">
+                      <div className="flex items-center gap-1.5">
+                        <Zap className="w-3 h-3 text-amber-400 shrink-0" />
+                        <span className="text-2xs text-slate-500 line-clamp-1">{summary.decisions[0].title}</span>
+                      </div>
+                    </div>
+                  )}
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+
         <div className="grid grid-cols-3 gap-4">
           {/* Recent memory */}
           <motion.div
@@ -268,13 +356,16 @@ export default function DashboardPage(): React.ReactElement {
             )}
           </motion.div>
 
-          {/* Timeline + Quick actions */}
+          {/* Timeline + Active context + Quick actions */}
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3 }}
             className="space-y-3"
           >
+            {/* Active context display */}
+            <ActiveContextPanel />
+
             {/* Recent decisions */}
             <div className="surface-card p-4">
               <div className="flex items-center gap-2 mb-3">
@@ -336,6 +427,44 @@ export default function DashboardPage(): React.ReactElement {
         </div>
       </div>
     </div>
+  )
+}
+
+function ActiveContextPanel() {
+  const { activeContext } = useAppStore()
+  const navigate = useNavigate()
+
+  if (!activeContext) return null
+
+  const age = Date.now() - activeContext.timestamp
+  const ageLabel = age < 60000 ? 'just now' : age < 3600000
+    ? `${Math.floor(age / 60000)}m ago`
+    : `${Math.floor(age / 3600000)}h ago`
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.97 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="surface-card p-4 border-indigo-500/20 cursor-pointer hover:border-indigo-500/35 transition-all"
+      onClick={() => navigate('/query')}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+        <span className="text-2xs font-medium text-indigo-400 uppercase tracking-wider">Active Context</span>
+        <span className="text-2xs text-slate-600 ml-auto">{ageLabel}</span>
+      </div>
+      <p className="text-xs text-slate-300 font-medium line-clamp-2 mb-2">
+        "{activeContext.query}"
+      </p>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-2xs text-slate-600">{activeContext.nodeCount} nodes loaded from</span>
+        {activeContext.sourceNames.map(name => (
+          <span key={name} className="text-2xs px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400">
+            {name}
+          </span>
+        ))}
+      </div>
+    </motion.div>
   )
 }
 

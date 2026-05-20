@@ -303,6 +303,35 @@ export function registerIpcHandlers(
     }))
   })
 
+  // === SOURCE SUMMARY ===
+
+  ipcMain.handle('sources:summary', async (_, sourceId: string) => {
+    const source = db.getSource(sourceId)
+    if (!source) return null
+    const nodes = db.getNodesBySource(sourceId)
+    const decisions = db.getTimeline(100).filter(e => e.sourceId === sourceId).slice(0, 5)
+    const entityCounts = new Map<string, number>()
+    for (const node of nodes) {
+      for (const e of node.entities) {
+        entityCounts.set(e, (entityCounts.get(e) || 0) + 1)
+      }
+    }
+    const topEntities = [...entityCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([name, count]) => ({ name, count }))
+
+    return {
+      source,
+      topEntities,
+      decisions,
+      nodeTypes: nodes.reduce((acc, n) => {
+        acc[n.type] = (acc[n.type] || 0) + 1
+        return acc
+      }, {} as Record<string, number>),
+    }
+  })
+
   // === PERMISSIONS / TOKENS ===
 
   ipcMain.handle('tokens:list', () => listTokens())

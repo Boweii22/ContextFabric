@@ -33,6 +33,7 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke('sources:remove', id),
     sync: (id: string) => ipcRenderer.invoke('sources:sync', id),
     toggle: (id: string, enabled: boolean) => ipcRenderer.invoke('sources:toggle', id, enabled),
+    summary: (sourceId: string) => ipcRenderer.invoke('sources:summary', sourceId),
   },
 
   // Entities

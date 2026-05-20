@@ -22,6 +22,7 @@ declare global {
         remove: (id: string) => Promise<unknown>
         sync: (id: string) => Promise<unknown>
         toggle: (id: string, enabled: boolean) => Promise<unknown>
+        summary: (sourceId: string) => Promise<unknown>
       }
       entities: {
         list: (limit?: number) => Promise<unknown>

@@ -43,7 +43,7 @@ export default function QueryPage(): React.ReactElement {
     queryResult, setQueryResult,
     isQuerying, setIsQuerying,
     queryHistory, addToHistory,
-    ollamaConnected
+    ollamaConnected, setActiveContext
   } = useAppStore()
 
   const location = useLocation()
@@ -83,6 +83,9 @@ export default function QueryPage(): React.ReactElement {
       const result = await api.memory.query(query) as AIQueryResult
       setQueryResult(result)
       addToHistory(result)
+      // Update active context so sidebar shows what's loaded
+      const sourceNames = [...new Set(result.sources.map(s => s.node?.sourceName || '').filter(Boolean))]
+      setActiveContext({ query, sourceNames, nodeCount: result.sources.length, timestamp: Date.now() })
     } catch (err) {
       setQueryResult({
         query,

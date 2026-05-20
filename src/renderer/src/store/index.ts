@@ -49,6 +49,10 @@ interface AppStore {
   queryHistory: AIQueryResult[]
   addToHistory: (result: AIQueryResult) => void
 
+  // Active context — what the last query loaded into context
+  activeContext: { query: string; sourceNames: string[]; nodeCount: number; timestamp: number } | null
+  setActiveContext: (ctx: { query: string; sourceNames: string[]; nodeCount: number; timestamp: number } | null) => void
+
   // Processing
   processingStatuses: Record<string, ProcessingStatus>
   setProcessingStatus: (status: ProcessingStatus) => void
@@ -120,11 +124,13 @@ export const useAppStore = create<AppStore>()(
     queryHistory: [],
     addToHistory: (result) =>
       set(state => {
-        // Deduplicate by query text — don't add if already present
         const exists = state.queryHistory.some(h => h.query === result.query)
         if (exists) return state
         return { queryHistory: [result, ...state.queryHistory].slice(0, 30) }
       }),
+
+    activeContext: null,
+    setActiveContext: (ctx) => set({ activeContext: ctx }),
 
     processingStatuses: {},
     setProcessingStatus: (status) =>

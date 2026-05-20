@@ -28,7 +28,7 @@ const BOTTOM_NAV = [
 export default function AppShell(): React.ReactElement {
   const location = useLocation()
   const navigate = useNavigate()
-  const { sidebarCollapsed, setSidebarCollapsed, stats, ollamaConnected, isDarkMode, toggleTheme } = useAppStore()
+  const { sidebarCollapsed, setSidebarCollapsed, stats, ollamaConnected, isDarkMode, toggleTheme, activeContext } = useAppStore()
 
   return (
     <div className="flex flex-col h-screen bg-cosmos-900 overflow-hidden">
@@ -99,6 +99,22 @@ export default function AppShell(): React.ReactElement {
               )
             })}
           </nav>
+
+          {/* Active context indicator */}
+          {!sidebarCollapsed && activeContext && (
+            <div className="mx-3 mb-2 px-3 py-2.5 rounded-xl bg-indigo-500/8 border border-indigo-500/20">
+              <div className="flex items-center gap-1.5 mb-1">
+                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                <span className="text-2xs font-medium text-indigo-400 uppercase tracking-wider">Active Context</span>
+              </div>
+              <p className="text-2xs text-slate-400 leading-relaxed line-clamp-2">
+                "{activeContext.query}"
+              </p>
+              <p className="text-2xs text-slate-600 mt-1">
+                {activeContext.nodeCount} node{activeContext.nodeCount !== 1 ? 's' : ''} · {activeContext.sourceNames.join(', ')}
+              </p>
+            </div>
+          )}
 
           {/* Stats pill */}
           {!sidebarCollapsed && stats && (
