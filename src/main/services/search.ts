@@ -14,6 +14,17 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return mag === 0 ? 0 : dot / mag
 }
 
+// Exponential decay: score = 1 at age=0, ~0.5 at halfLifeDays, approaching 0 asymptotically
+function recencyScore(timestampMs: number, halfLifeDays = 180): number {
+  const ageDays = (Date.now() - timestampMs) / 86_400_000
+  return Math.exp(-ageDays * Math.LN2 / halfLifeDays)
+}
+
+// Detect queries that care about time so we can boost recency weight
+function isTimeAwareQuery(query: string): boolean {
+  return /\b(recent|latest|last|current|today|this week|this month|new|now|just|ago|yesterday)\b/i.test(query)
+}
+
 export class SearchService {
   constructor(
     private db: DatabaseService,
@@ -25,7 +36,10 @@ export class SearchService {
     limit = 20,
     options: { semanticWeight?: number; keywordWeight?: number; filterSourceIds?: string[] } = {}
   ): Promise<SearchResult[]> {
-    const { semanticWeight = 0.7, keywordWeight = 0.3 } = options
+    const timeAware = isTimeAwareQuery(query)
+    // Time-aware queries: heavy recency boost. Normal queries: light recency nudge.
+    const recencyWeight = timeAware ? 0.30 : 0.05
+    const { semanticWeight = timeAware ? 0.50 : 0.65, keywordWeight = timeAware ? 0.20 : 0.30 } = options
     const results = new Map<string, { node: MemoryNode; semanticScore: number; keywordScore: number }>()
 
     // Semantic search
@@ -71,9 +85,10 @@ export class SearchService {
       // ignore fts errors
     }
 
-    // Combine scores
+    // Combine scores with recency
     const combined: SearchResult[] = Array.from(results.values()).map(({ node, semanticScore, keywordScore }) => {
-      const score = semanticScore * semanticWeight + keywordScore * keywordWeight
+      const rScore = recencyScore(node.timestamp)
+      const score = semanticScore * semanticWeight + keywordScore * keywordWeight + rScore * recencyWeight
       return {
         node,
         score,

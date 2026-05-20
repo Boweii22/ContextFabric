@@ -66,39 +66,39 @@ export class OllamaService {
       .trim()
   }
 
-  private async generate(prompt: string): Promise<string> {
+  private async generate(prompt: string, timeoutMs = 120000): Promise<string> {
     try {
-      // Send NO options — let Ollama use the model's own defaults.
-      // Passing num_ctx/num_predict for certain Gemma 4 variants causes HTTP 500.
       const res = await this.client.post<OllamaGenerateResponse>('/api/generate', {
         model: this.model,
         prompt,
         stream: false,
-      })
+      }, { timeout: timeoutMs })
       return this.clean(res.data.response || '')
     } catch (err: unknown) {
-      const axiosErr = err as { response?: { status?: number; data?: unknown }; message?: string }
+      const axiosErr = err as { response?: { status?: number; data?: unknown }; message?: string; code?: string }
       const status = axiosErr?.response?.status
       const body = axiosErr?.response?.data
 
-      // Extract Ollama's own error message from the response body
       let ollamaMsg = ''
       if (body && typeof body === 'object') {
         ollamaMsg = (body as { error?: string }).error || JSON.stringify(body)
       }
 
-      // On 500: retry once with a much shorter prompt, still no options
+      // Timeout — give a clear actionable message
+      if (axiosErr?.code === 'ECONNABORTED' || axiosErr?.message?.includes('timeout')) {
+        throw new Error(`Ollama timed out after ${timeoutMs / 1000}s — try a shorter question, or check that Ollama isn't overloaded`)
+      }
+
+      // On 500: retry once with a much shorter prompt
       if (status === 500) {
-        console.warn('[Ollama] 500 on full prompt, retrying with short prompt. Ollama said:', ollamaMsg)
-        const shortPrompt = prompt.length > 600
-          ? prompt.substring(0, 600) + '\n\nAnswer briefly:'
+        console.warn('[Ollama] 500 on full prompt, retrying short. Ollama said:', ollamaMsg)
+        const shortPrompt = prompt.length > 500
+          ? prompt.substring(0, 500) + '\n\nAnswer briefly:'
           : prompt
         try {
           const retry = await this.client.post<OllamaGenerateResponse>('/api/generate', {
-            model: this.model,
-            prompt: shortPrompt,
-            stream: false,
-          })
+            model: this.model, prompt: shortPrompt, stream: false,
+          }, { timeout: timeoutMs })
           return this.clean(retry.data.response || '')
         } catch (retryErr: unknown) {
           const rb = (retryErr as { response?: { data?: unknown } })?.response?.data
@@ -146,32 +146,31 @@ export class OllamaService {
     sourceMeta = ''
   ): Promise<{ answer: string; reasoning: string }> {
 
-    const chunks = contextChunks.slice(0, 5)
+    const chunks = contextChunks.slice(0, 3)
 
-    let prompt = `You are a personal AI assistant. Answer the question using the context below. Be specific and direct.\n\n`
+    let prompt = `Answer the question using only the context below. Be concise and specific.\n\n`
 
-    // Always include source list — tells Gemma the project name from the path
     if (sourceMeta) {
-      prompt += `Connected knowledge sources:\n${sourceMeta}\n\n`
+      prompt += `Sources:\n${sourceMeta}\n\n`
     }
 
     if (importLines.length > 0) {
-      prompt += `Imports/libraries detected in project files:\n${importLines.slice(0, 20).join('\n')}\n\n`
+      prompt += `Libraries: ${importLines.slice(0, 8).join(', ')}\n\n`
     }
 
     if (chunks.length > 0) {
-      prompt += `Relevant file contents:\n`
+      prompt += `Context:\n`
       chunks.forEach((c, i) => {
-        prompt += `\n[${i + 1}] ${c.source}\n${c.content.substring(0, 350)}\n`
+        prompt += `[${i + 1}] ${c.source}\n${c.content.substring(0, 250)}\n\n`
       })
-      prompt += `\n`
     }
 
-    prompt += `Question: ${userQuery}\n\nAnswer:`
+    prompt += `Question: ${userQuery}\nAnswer:`
 
     let answer = ''
     try {
-      answer = await this.generate(prompt)
+      // 90s cap for interactive queries — if Gemma takes longer something is wrong
+      answer = await this.generate(prompt, 90000)
     } catch (err) {
       throw new Error(`Ollama failed: ${err instanceof Error ? err.message : 'Unknown'}`)
     }

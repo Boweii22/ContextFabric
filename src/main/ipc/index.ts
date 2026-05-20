@@ -32,7 +32,9 @@ export function registerIpcHandlers(
 
   ipcMain.handle('memory:query', async (_, query: string) => {
     const start = Date.now()
+    ingestion.setQueryActive(true)
 
+    try {
     // Build source metadata context — always included so Gemma knows what exists
     const allSources = db.getSources()
     const sourceMeta = allSources
@@ -80,9 +82,25 @@ export function registerIpcHandlers(
 
     const results = merged
 
-    const { answer, reasoning } = await ollama.queryWithContext(
-      query, contextChunks, importLines, sourceMeta
-    )
+    let answer: string
+    let reasoning: string
+    try {
+      const r = await ollama.queryWithContext(query, contextChunks, importLines, sourceMeta)
+      answer = r.answer
+      reasoning = r.reasoning
+    } catch {
+      // Gemma timed out or unavailable — build a structured answer from search results
+      if (merged.length > 0) {
+        answer = `Here's what I found in your knowledge base:\n\n` +
+          merged.slice(0, 3).map(r =>
+            `**${r.node.title}** (${r.node.sourceName})\n${r.node.content.substring(0, 200).replace(/\n/g, ' ')}...`
+          ).join('\n\n')
+        reasoning = `AI unavailable — showing top ${Math.min(merged.length, 3)} search results directly.`
+      } else {
+        answer = `Nothing found in your indexed sources matching "${query}".`
+        reasoning = 'No matching sources found.'
+      }
+    }
 
     const entities = new Set<string>()
 
@@ -102,6 +120,9 @@ export function registerIpcHandlers(
     db.saveQueryHistory(result)
 
     return result
+    } finally {
+      ingestion.setQueryActive(false)
+    }
   })
 
   ipcMain.handle('memory:get-history', async (_, limit = 30) => {

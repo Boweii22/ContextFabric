@@ -22,7 +22,12 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'ou
 export class IngestionService {
   private enrichmentQueue: Array<{ node: MemoryNode; source: DataSource }> = []
   private enriching = false
+  private queryActive = false   // pauses enrichment while user is querying
   private watchers = new Map<string, FSWatcher>()   // sourceId → watcher
+
+  setQueryActive(active: boolean): void {
+    this.queryActive = active
+  }
 
   constructor(
     private db: DatabaseService,
@@ -733,13 +738,29 @@ export class IngestionService {
     if (this.enriching || this.enrichmentQueue.length === 0) return
     this.enriching = true
 
+    // Wait 30s after sync before enriching — lets user query without contention
+    await new Promise(r => setTimeout(r, 30000))
+
     while (this.enrichmentQueue.length > 0) {
+      // Yield to interactive queries — wait until no query is active
+      while (this.queryActive) {
+        await new Promise(r => setTimeout(r, 500))
+      }
       const item = this.enrichmentQueue.shift()!
       try { await this.enrichNode(item.node, item.source) } catch { /* never block */ }
-      await new Promise(r => setTimeout(r, 300))
+      // 2s gap between nodes so Ollama isn't saturated
+      await new Promise(r => setTimeout(r, 2000))
     }
 
     this.enriching = false
+  }
+
+  // Cap any single enrichment Gemma call so it can't block Ollama for the user
+  private withTimeout<T>(promise: Promise<T>, ms = 25000): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => setTimeout(() => reject(new Error('enrichment timeout')), ms))
+    ])
   }
 
   private async enrichNode(node: MemoryNode, source: DataSource): Promise<void> {
@@ -747,13 +768,13 @@ export class IngestionService {
 
     // Summarize long content
     if (!node.summary && node.content.length > 800) {
-      try { node.summary = await this.ollama.summarize(node.content, 150) } catch { /* skip */ }
+      try { node.summary = await this.withTimeout(this.ollama.summarize(node.content, 150)) } catch { /* skip */ }
     }
 
     // Decision extraction for non-code content
     if (node.type !== 'code') {
       try {
-        const decision = await this.ollama.extractDecision(node.content)
+        const decision = await this.withTimeout(this.ollama.extractDecision(node.content))
         if (decision.isDecision && decision.decision) {
           const eventId = uuidv4()
           this.db.upsertTimelineEvent({
@@ -783,7 +804,7 @@ export class IngestionService {
 
     // AI entity extraction
     try {
-      const ai = await this.ollama.extractEntities(node.content)
+      const ai = await this.withTimeout(this.ollama.extractEntities(node.content))
       node.entities = [...new Set([...node.entities, ...ai.map(e => e.name)])].slice(0, 10)
       this.saveEntitiesBulk([node])
     } catch { /* skip */ }
