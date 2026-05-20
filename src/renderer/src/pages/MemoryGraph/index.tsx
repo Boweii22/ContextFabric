@@ -116,6 +116,27 @@ class ForceGraph {
   }
 }
 
+// ─── BFS cluster detection ────────────────────────────────────────────────────
+
+function findCluster(startId: string, edges: GEdge[]): Set<string> {
+  const adj = new Map<string, string[]>()
+  for (const e of edges) {
+    if (!adj.has(e.source)) adj.set(e.source, [])
+    if (!adj.has(e.target)) adj.set(e.target, [])
+    adj.get(e.source)!.push(e.target)
+    adj.get(e.target)!.push(e.source)
+  }
+  const visited = new Set<string>([startId])
+  const queue = [startId]
+  while (queue.length) {
+    const id = queue.shift()!
+    for (const nb of adj.get(id) || []) {
+      if (!visited.has(nb)) { visited.add(nb); queue.push(nb) }
+    }
+  }
+  return visited
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function MemoryGraphPage() {
@@ -133,6 +154,7 @@ export default function MemoryGraphPage() {
   const isPanning = useRef(false)
   const lastMouse = useRef({ x: 0, y: 0 })
   const hoveredNode = useRef<GNode | null>(null)
+  const clusterRef = useRef<Set<string>>(new Set())
 
   // UI state
   const [loading, setLoading] = useState(true)
@@ -234,43 +256,69 @@ export default function MemoryGraphPage() {
         return true
       }
 
+      const now = performance.now()
+      const cluster = clusterRef.current
+      const hasCluster = cluster.size > 0
+
       // ── Edges ──
       for (const e of edges) {
         const a = nodeMap.get(e.source), b = nodeMap.get(e.target)
         if (!a || !b) continue
+
+        const inCluster = hasCluster && cluster.has(e.source) && cluster.has(e.target)
+        const isHovered = hoveredNode.current &&
+          (e.source === hoveredNode.current.id || e.target === hoveredNode.current.id)
+
+        // Dim edges outside the cluster when a cluster is active
+        if (hasCluster && !inCluster) {
+          ctx.setLineDash([])
+          ctx.beginPath()
+          ctx.moveTo(a.x, a.y)
+          ctx.lineTo(b.x, b.y)
+          ctx.strokeStyle = 'rgba(99,102,241,0.03)'
+          ctx.lineWidth = 0.3
+          ctx.stroke()
+          continue
+        }
+
         const aMatch = !isFiltered || matchNode(a)
         const bMatch = !isFiltered || matchNode(b)
-        const opacity = isFiltered
+        const baseOpacity = isFiltered
           ? (aMatch && bMatch ? e.weight * 0.5 : 0.03)
-          : Math.max(0.04, e.weight * 0.3)
+          : Math.max(0.05, e.weight * 0.35)
 
         ctx.beginPath()
         ctx.moveTo(a.x, a.y)
-
-        // Slight curve for web feel
         const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.15
         const my = (a.y + b.y) / 2 - (b.x - a.x) * 0.15
         ctx.quadraticCurveTo(mx, my, b.x, b.y)
 
-        const isHovered = hoveredNode.current &&
-          (e.source === hoveredNode.current.id || e.target === hoveredNode.current.id)
-
-        if (isHovered) {
-          ctx.strokeStyle = `rgba(99,102,241,${Math.min(0.9, opacity * 3)})`
+        if (inCluster) {
+          // Animated flowing dash along cluster edges
+          ctx.setLineDash([5, 9])
+          ctx.lineDashOffset = -(now / 35) % 14
+          ctx.strokeStyle = `rgba(99,102,241,${Math.min(0.85, baseOpacity * 4)})`
+          ctx.lineWidth = 1.5
+        } else if (isHovered) {
+          ctx.setLineDash([])
+          ctx.strokeStyle = `rgba(99,102,241,${Math.min(0.9, baseOpacity * 3)})`
           ctx.lineWidth = 1.5
         } else {
-          ctx.strokeStyle = `rgba(99,102,241,${opacity})`
+          ctx.setLineDash([])
+          ctx.strokeStyle = `rgba(99,102,241,${baseOpacity})`
           ctx.lineWidth = Math.max(0.3, e.weight * 0.8)
         }
         ctx.stroke()
       }
+      ctx.setLineDash([])
 
       // ── Nodes ──
       for (const nd of nodes) {
         const match = !isFiltered || matchNode(nd)
         const isHov = hoveredNode.current?.id === nd.id
         const isSel = selectedNode?.id === nd.id
-        const alpha = match ? 1 : 0.12
+        const inCluster = !hasCluster || cluster.has(nd.id)
+        const alpha = !inCluster ? 0.1 : (match ? 1 : 0.12)
 
         ctx.globalAlpha = alpha
 
@@ -436,10 +484,15 @@ export default function MemoryGraphPage() {
       const cx = e.clientX - rect.left, cy = e.clientY - rect.top
       const hit = nodeAt(cx, cy)
       if (hit?.data) {
-        setSelectedNode(prev => prev?.id === hit.id ? null : hit.data!)
-        setSelectedNodeId(hit.id)
+        const isDeselect = selectedNode?.id === hit.id
+        setSelectedNode(isDeselect ? null : hit.data!)
+        setSelectedNodeId(isDeselect ? null : hit.id)
+        clusterRef.current = isDeselect
+          ? new Set()
+          : findCluster(hit.id, sim.current.edges)
       } else {
         setSelectedNode(null)
+        clusterRef.current = new Set()
       }
     }
   }, [])
@@ -672,7 +725,12 @@ export default function MemoryGraphPage() {
                 <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
                   <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatDate(selectedNode.timestamp)}</span>
                   <span className="text-slate-700">·</span>
-                  <span className="truncate max-w-[140px]">{selectedNode.sourceName}</span>
+                  <span className="truncate max-w-[120px]">{selectedNode.sourceName}</span>
+                  {clusterRef.current.size > 1 && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400 text-2xs">
+                      {clusterRef.current.size} in cluster
+                    </span>
+                  )}
                 </div>
 
                 {selectedNode.summary && (
