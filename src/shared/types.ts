@@ -54,6 +54,9 @@ export interface AIQueryResult {
   timeline?: TimelineEvent[]
   confidence: number
   processingTime: number
+  citations?: Array<{ index: number; title: string; sourceName: string }>
+  conflicts?: string[]
+  decisionChain?: string[]
 }
 
 export interface TimelineEvent {

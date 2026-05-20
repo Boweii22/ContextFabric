@@ -20,6 +20,19 @@ export class OllamaService {
   private baseUrl: string
   private model: string
   private embeddingModel: string
+  private enrichmentController: AbortController | null = null
+
+  // Called when a user query starts — aborts any in-progress enrichment Ollama call
+  abortEnrichment(): void {
+    this.enrichmentController?.abort()
+    this.enrichmentController = null
+  }
+
+  // Used by enrichment calls so they can be cancelled mid-flight
+  startEnrichmentCall(): AbortSignal {
+    this.enrichmentController = new AbortController()
+    return this.enrichmentController.signal
+  }
 
   constructor(
     baseUrl = 'http://localhost:11434',
@@ -66,13 +79,13 @@ export class OllamaService {
       .trim()
   }
 
-  private async generate(prompt: string, timeoutMs = 120000): Promise<string> {
+  private async generate(prompt: string, timeoutMs = 120000, signal?: AbortSignal): Promise<string> {
     try {
       const res = await this.client.post<OllamaGenerateResponse>('/api/generate', {
         model: this.model,
         prompt,
         stream: false,
-      }, { timeout: timeoutMs })
+      }, { timeout: timeoutMs, signal })
       return this.clean(res.data.response || '')
     } catch (err: unknown) {
       const axiosErr = err as { response?: { status?: number; data?: unknown }; message?: string; code?: string }
@@ -82,6 +95,11 @@ export class OllamaService {
       let ollamaMsg = ''
       if (body && typeof body === 'object') {
         ollamaMsg = (body as { error?: string }).error || JSON.stringify(body)
+      }
+
+      // Aborted (enrichment cancelled for a user query) — silent
+      if (axiosErr?.code === 'ERR_CANCELED' || axiosErr?.message?.includes('canceled')) {
+        throw new Error('enrichment_aborted')
       }
 
       // Timeout — give a clear actionable message
@@ -141,59 +159,96 @@ export class OllamaService {
 
   async queryWithContext(
     userQuery: string,
-    contextChunks: Array<{ content: string; source: string; timestamp: number }>,
+    contextChunks: Array<{ content: string; source: string; timestamp: number; sourceType?: string }>,
     importLines: string[] = [],
-    sourceMeta = ''
-  ): Promise<{ answer: string; reasoning: string }> {
+    sourceMeta = '',
+    decisionChain: string[] = [],
+    conflicts: string[] = []
+  ): Promise<{
+    answer: string
+    reasoning: string
+    citations: Array<{ index: number; title: string; sourceName: string }>
+    detectedConflicts: string[]
+  }> {
+    const chunks = contextChunks.slice(0, 4)
 
-    const chunks = contextChunks.slice(0, 3)
+    // ── Build structured prompt ───────────────────────────────────────────────
+    let prompt = `You are a personal AI assistant. Answer using ONLY the sources below.\n`
+    prompt += `Rules: cite sources as [1][2] etc. If two sources disagree, write "⚠️ Conflict: ..." and explain both sides.\n\n`
 
-    let prompt = `Answer the question using only the context below. Be concise and specific.\n\n`
-
-    if (sourceMeta) {
-      prompt += `Sources:\n${sourceMeta}\n\n`
-    }
-
-    if (importLines.length > 0) {
-      prompt += `Libraries: ${importLines.slice(0, 8).join(', ')}\n\n`
-    }
-
+    // Labeled, typed sources
     if (chunks.length > 0) {
-      prompt += `Context:\n`
+      prompt += `Sources:\n`
       chunks.forEach((c, i) => {
-        prompt += `[${i + 1}] ${c.source}\n${c.content.substring(0, 250)}\n\n`
+        const typeLabel = c.sourceType === 'code' ? 'code' : c.sourceType === 'conversation' ? 'chat' : 'doc'
+        prompt += `[${i + 1}] ${c.source} (${typeLabel})\n${c.content.substring(0, 220)}\n\n`
       })
     }
 
-    prompt += `Question: ${userQuery}\nAnswer:`
+    // Decision history from timeline
+    if (decisionChain.length > 0) {
+      prompt += `Decision history:\n${decisionChain.slice(0, 4).map(d => `• ${d}`).join('\n')}\n\n`
+    }
 
+    // Known conflicts to surface
+    if (conflicts.length > 0) {
+      prompt += `Note — potential conflicts detected: ${conflicts.slice(0, 2).join('; ')}\n\n`
+    }
+
+    // Library context for stack questions
+    if (importLines.length > 0) {
+      prompt += `Libraries: ${importLines.slice(0, 6).join(', ')}\n\n`
+    }
+
+    prompt += `Question: ${userQuery}\nAnswer (with [N] citations):`
+
+    // ── Generate ──────────────────────────────────────────────────────────────
     let answer = ''
     try {
-      // 90s cap for interactive queries — if Gemma takes longer something is wrong
-      answer = await this.generate(prompt, 90000)
+      answer = await this.generate(prompt, 180000)
     } catch (err) {
       throw new Error(`Ollama failed: ${err instanceof Error ? err.message : 'Unknown'}`)
     }
 
-    // Empty response fallback — only use stack detection for stack questions
+    // ── Fallbacks ─────────────────────────────────────────────────────────────
     if (!answer || answer.length < 8) {
-      const isStackQuestion = /stack|technolog|framework|language|library|built with|dependencies/i.test(userQuery)
+      const isStackQuestion = /stack|technolog|framework|language|library|built with/i.test(userQuery)
       if (isStackQuestion && importLines.length > 0) {
         answer = this.buildStackAnswer(importLines)
       } else if (chunks.length > 0) {
-        // Give the user the raw context so they can see what was found
-        answer = `I found ${chunks.length} relevant source(s) but couldn't generate a response. Here's what was found:\n\n` +
-          chunks.slice(0, 2).map(c => `From "${c.source}":\n${c.content.substring(0, 200)}`).join('\n\n')
+        answer = `Here's what I found:\n\n` +
+          chunks.slice(0, 2).map((c, i) => `**[${i + 1}] ${c.source}**\n${c.content.substring(0, 200)}`).join('\n\n')
       } else {
-        answer = `Nothing found in your indexed sources matching "${userQuery}". Try syncing your sources first, or rephrase the question.`
+        answer = `Nothing found matching "${userQuery}". Try syncing your sources first.`
       }
     }
 
+    // ── Parse inline citations [N] from answer ────────────────────────────────
+    const citationSet = new Set<number>()
+    const citationRe = /\[(\d+)\]/g
+    let m: RegExpExecArray | null
+    while ((m = citationRe.exec(answer)) !== null) {
+      const idx = parseInt(m[1])
+      if (idx >= 1 && idx <= chunks.length) citationSet.add(idx)
+    }
+    const citations = [...citationSet].map(idx => {
+      const chunk = chunks[idx - 1]
+      const parts = chunk.source.split(' — ')
+      return { index: idx, title: parts[1] || parts[0], sourceName: parts[0] }
+    })
+
+    // ── Extract any conflict notes Gemma wrote ────────────────────────────────
+    const detectedConflicts: string[] = []
+    const conflictRe = /⚠️ Conflict:([^\n.]+)/gi
+    while ((m = conflictRe.exec(answer)) !== null) {
+      detectedConflicts.push(m[1].trim())
+    }
+
     const reasoning = chunks.length > 0
-      ? `Searched ${chunks.length} source chunk(s).${importLines.length > 0 ? ` Found ${importLines.length} import statements.` : ''}`
+      ? `Reasoned across ${chunks.length} source(s) from ${[...new Set(chunks.map(c => c.source.split(' — ')[0]))].join(', ')}.${decisionChain.length > 0 ? ` Referenced ${decisionChain.length} past decision(s).` : ''}`
       : 'No matching sources found in your knowledge base.'
 
-    return { answer, reasoning }
+    return { answer, reasoning, citations, detectedConflicts }
   }
 
   // Only called for stack-specific questions when Gemma returns empty
@@ -254,7 +309,7 @@ Text: ${text.substring(0, 600)}
 
 JSON:`
 
-      const response = await this.generate(prompt)
+      const response = await this.generate(prompt, 30000, this.enrichmentController?.signal)
       const match = response.match(/\[[\s\S]*?\]/)
       if (!match) return regexHits
 
@@ -292,8 +347,7 @@ Text: ${text.substring(0, 1200)}
 
 One-sentence summary:`
 
-      const result = await this.generate(prompt)
-      // Take only the first sentence if Gemma returns multiple
+      const result = await this.generate(prompt, 30000, this.enrichmentController?.signal)
       const firstSentence = result.split(/[.\n]/)[0]?.trim() || result
       return firstSentence.substring(0, maxLength)
     } catch {
@@ -324,7 +378,7 @@ Text: ${text.substring(0, 800)}
 
 JSON response:`
 
-      const response = await this.generate(prompt)
+      const response = await this.generate(prompt, 30000, this.enrichmentController?.signal)
 
       // Extract JSON from response — Gemma sometimes wraps it in markdown
       const match = response.match(/\{[\s\S]*?\}/)

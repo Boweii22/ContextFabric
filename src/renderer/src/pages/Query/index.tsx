@@ -3,13 +3,29 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Send, Brain, Sparkles, Clock, ChevronRight,
-  Copy, RotateCcw, Zap, BookOpen, Check
+  Copy, RotateCcw, Zap, BookOpen, Check, AlertTriangle, GitBranch
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAppStore } from '../../store'
 import { formatDate, truncate, getTypeColor } from '../../lib/utils'
 import { cn } from '../../lib/utils'
 import type { AIQueryResult, SearchResult } from '../../../../shared/types'
+
+// Render answer text with [N] citation markers as styled superscripts
+function renderWithCitations(text: string): React.ReactNode {
+  const parts = text.split(/(\[\d+\])/g)
+  return parts.map((part, i) => {
+    const match = part.match(/^\[(\d+)\]$/)
+    if (match) {
+      return (
+        <sup key={i} className="inline-flex items-center justify-center w-4 h-4 text-2xs bg-indigo-500/20 text-indigo-400 rounded font-bold mx-0.5 cursor-default" title={`Source ${match[1]}`}>
+          {match[1]}
+        </sup>
+      )
+    }
+    return part
+  })
+}
 
 const EXAMPLE_QUERIES = [
   { text: "What stack did I use in my recent project?", category: "Stack" },
@@ -253,11 +269,41 @@ export default function QueryPage(): React.ReactElement {
                         </span>
                       </div>
 
+                      {/* Conflicts banner */}
+                      {queryResult.conflicts && queryResult.conflicts.length > 0 && (
+                        <div className="mb-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            <span className="text-2xs text-amber-400 font-semibold uppercase tracking-wide">Conflicts detected</span>
+                          </div>
+                          {queryResult.conflicts.map((c, i) => (
+                            <p key={i} className="text-xs text-amber-300/80 leading-relaxed">{c}</p>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Answer with inline citations rendered */}
                       <div className="p-4 rounded-2xl bg-cosmos-800 border border-white/[0.06] mb-2">
                         <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
-                          {queryResult.answer}
+                          {renderWithCitations(queryResult.answer)}
                         </p>
                       </div>
+
+                      {/* Decision chain */}
+                      {queryResult.decisionChain && queryResult.decisionChain.length > 0 && (
+                        <div className="px-3 py-2 rounded-xl bg-cosmos-700/40 border border-white/[0.04] mb-2">
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <GitBranch className="w-3 h-3 text-violet-400" />
+                            <span className="text-2xs text-violet-400 uppercase tracking-wide font-medium">Decision history</span>
+                          </div>
+                          {queryResult.decisionChain.map((d, i) => (
+                            <div key={i} className="flex items-start gap-2 py-0.5">
+                              <div className="w-1 h-1 rounded-full bg-violet-400/60 mt-1.5 shrink-0" />
+                              <p className="text-xs text-slate-400 leading-relaxed">{d}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {/* Reasoning */}
                       {queryResult.reasoning && (

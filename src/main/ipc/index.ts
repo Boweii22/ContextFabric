@@ -74,26 +74,46 @@ export function registerIpcHandlers(
 
     const importLines = extractImportLines(merged.map(r => r.node.content))
 
+    // ── Decision chain: fetch timeline events relevant to the query ───────────
+    const allTimeline = db.getTimeline(50)
+    const queryWords = new Set(query.toLowerCase().split(/\s+/).filter(w => w.length > 3))
+    const decisionChain = allTimeline
+      .filter(e => {
+        const text = `${e.title} ${e.description} ${e.relatedEntities.join(' ')}`.toLowerCase()
+        return [...queryWords].some(w => text.includes(w))
+      })
+      .slice(0, 5)
+      .map(e => `${e.title}${e.description ? ` — ${e.description.substring(0, 80)}` : ''}`)
+
+    // ── Conflict detection: same entity, opposing sentiment across chunks ──────
+    const conflicts = detectConflicts(merged.map(r => r.node))
+
     const contextChunks = merged.map(r => ({
       content: r.node.content,
       source: `${r.node.sourceName} — ${r.node.title}`,
       timestamp: r.node.timestamp,
+      sourceType: r.node.type,
     }))
 
     const results = merged
 
     let answer: string
     let reasoning: string
+    let citations: AIQueryResult['citations'] = []
+    let detectedConflicts: string[] = []
     try {
-      const r = await ollama.queryWithContext(query, contextChunks, importLines, sourceMeta)
+      const r = await ollama.queryWithContext(
+        query, contextChunks, importLines, sourceMeta, decisionChain, conflicts
+      )
       answer = r.answer
       reasoning = r.reasoning
+      citations = r.citations
+      detectedConflicts = r.detectedConflicts
     } catch {
-      // Gemma timed out or unavailable — build a structured answer from search results
       if (merged.length > 0) {
         answer = `Here's what I found in your knowledge base:\n\n` +
-          merged.slice(0, 3).map(r =>
-            `**${r.node.title}** (${r.node.sourceName})\n${r.node.content.substring(0, 200).replace(/\n/g, ' ')}...`
+          merged.slice(0, 3).map((r, i) =>
+            `**[${i + 1}] ${r.node.title}** (${r.node.sourceName})\n${r.node.content.substring(0, 200).replace(/\n/g, ' ')}...`
           ).join('\n\n')
         reasoning = `AI unavailable — showing top ${Math.min(merged.length, 3)} search results directly.`
       } else {
@@ -103,7 +123,6 @@ export function registerIpcHandlers(
     }
 
     const entities = new Set<string>()
-
     for (const r of results) r.node.entities.forEach(e => entities.add(e))
 
     const result: AIQueryResult = {
@@ -114,6 +133,9 @@ export function registerIpcHandlers(
       entities: Array.from(entities).slice(0, 10),
       confidence: results.length > 0 ? Math.min(results[0].score * 100, 95) : 20,
       processingTime: Date.now() - start,
+      citations,
+      conflicts: [...conflicts, ...detectedConflicts].slice(0, 3),
+      decisionChain: decisionChain.length > 0 ? decisionChain : undefined,
     }
 
     // Persist to DB so history survives app restarts
@@ -333,4 +355,36 @@ function extractImportLines(contents: string[]): string[] {
   }
 
   return lines.slice(0, 40) // cap at 40 lines to keep prompt tight
+}
+
+// Detect conflicting claims: same entity, opposing sentiment across different nodes
+function detectConflicts(nodes: import('../../shared/types').MemoryNode[]): string[] {
+  const positiveRe = /\b(use|using|chose|chosen|adopted|went with|decided on|picked)\s+(\w+)/gi
+  const negativeRe = /\b(rejected|replaced|dropped|abandoned|switched from|moved away from|stopped using)\s+(\w+)/gi
+
+  const positive = new Map<string, string>() // entity → source title
+  const negative = new Map<string, string>()
+  const conflicts: string[] = []
+
+  for (const node of nodes) {
+    const src = node.title
+    let m: RegExpExecArray | null
+    const pos = new RegExp(positiveRe.source, 'gi')
+    while ((m = pos.exec(node.content)) !== null) {
+      positive.set(m[2].toLowerCase(), src)
+    }
+    const neg = new RegExp(negativeRe.source, 'gi')
+    while ((m = neg.exec(node.content)) !== null) {
+      negative.set(m[2].toLowerCase(), src)
+    }
+  }
+
+  for (const [entity, posSrc] of positive) {
+    const negSrc = negative.get(entity)
+    if (negSrc && negSrc !== posSrc) {
+      conflicts.push(`"${entity}" — ${posSrc} says it's in use, ${negSrc} says it was replaced`)
+    }
+  }
+
+  return conflicts.slice(0, 3)
 }

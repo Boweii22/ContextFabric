@@ -28,6 +28,11 @@ export class IngestionService {
 
   setQueryActive(active: boolean): void {
     this.queryActive = active
+    if (active) {
+      // Immediately cancel any in-flight enrichment Ollama request
+      // so the query doesn't have to wait for it to finish
+      this.ollama.abortEnrichment()
+    }
   }
 
   constructor(
@@ -748,6 +753,7 @@ export class IngestionService {
         await new Promise(r => setTimeout(r, 500))
       }
       const item = this.enrichmentQueue.shift()!
+      this.ollama.startEnrichmentCall()  // register abort signal before each enrichment
       try { await this.enrichNode(item.node, item.source) } catch { /* never block */ }
       // 2s gap between nodes so Ollama isn't saturated
       await new Promise(r => setTimeout(r, 2000))
