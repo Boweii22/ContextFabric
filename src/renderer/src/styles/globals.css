@@ -4,6 +4,15 @@
 
 @layer base {
   :root {
+    --cf-bg-base: #080B14;
+    --cf-bg-sidebar: #04060D;
+    --cf-bg-card: #0D1117;
+    --cf-bg-hover: #111827;
+    --cf-border: rgba(255,255,255,0.06);
+    --cf-border-hover: rgba(255,255,255,0.12);
+    --cf-text-primary: #f1f5f9;
+    --cf-text-secondary: #94a3b8;
+    --cf-text-muted: #64748b;
     --background: 222 47% 5%;
     --foreground: 210 40% 98%;
     --card: 222 47% 7%;
@@ -135,6 +144,89 @@
     display: none;
   }
 }
+
+/* ── Light theme ──────────────────────────────────────────────────────────── */
+html.light {
+  color-scheme: light;
+  --cf-bg-base: #f1f5f9;
+  --cf-bg-sidebar: #e2e8f0;
+  --cf-bg-card: #ffffff;
+  --cf-bg-hover: #e8edf4;
+  --cf-border: rgba(0,0,0,0.09);
+  --cf-text-primary: #0f172a;
+  --cf-text-secondary: #475569;
+  --cf-text-muted: #94a3b8;
+}
+
+html.light body {
+  background-color: var(--cf-bg-base) !important;
+  background-image:
+    radial-gradient(ellipse at 20% 50%, rgba(99,102,241,0.06) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 20%, rgba(139,92,246,0.04) 0%, transparent 50%) !important;
+  color: var(--cf-text-primary) !important;
+}
+
+/* ── Cosmos backgrounds (attribute selector catches all variants) ── */
+html.light [class*="bg-cosmos-950"] { background-color: var(--cf-bg-sidebar) !important; }
+html.light [class*="bg-cosmos-900"] { background-color: var(--cf-bg-base) !important; }
+html.light [class*="bg-cosmos-800"] { background-color: var(--cf-bg-card) !important; }
+html.light [class*="bg-cosmos-700"] { background-color: var(--cf-bg-hover) !important; }
+html.light [class*="bg-cosmos-600"] { background-color: #dde3ed !important; }
+
+/* ── White-opacity backgrounds → black-opacity ── */
+html.light [class*="bg-white/"] { background-color: rgba(0,0,0,0.03) !important; }
+html.light [class*="hover:bg-white/"]:hover { background-color: rgba(0,0,0,0.05) !important; }
+
+/* ── Component classes ── */
+html.light .surface-card {
+  background-color: var(--cf-bg-card) !important;
+  border-color: var(--cf-border) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.06) !important;
+}
+html.light .glass {
+  background-color: rgba(255,255,255,0.8) !important;
+  border-color: var(--cf-border) !important;
+  backdrop-filter: blur(12px);
+}
+html.light .gradient-border::before {
+  opacity: 0.5;
+}
+
+/* ── Text ── */
+html.light .text-white { color: var(--cf-text-primary) !important; }
+html.light [class*="text-slate-100"],
+html.light [class*="text-slate-200"] { color: #1e293b !important; }
+html.light [class*="text-slate-300"] { color: #334155 !important; }
+html.light [class*="text-slate-400"] { color: var(--cf-text-secondary) !important; }
+html.light [class*="text-slate-500"] { color: #64748b !important; }
+html.light [class*="text-slate-600"] { color: #94a3b8 !important; }
+html.light [class*="text-slate-700"] { color: #cbd5e1 !important; }
+html.light [class*="placeholder-slate-"] { --tw-placeholder-opacity: 1; }
+html.light input::placeholder,
+html.light textarea::placeholder { color: #94a3b8 !important; }
+
+/* ── Borders ── */
+html.light [class*="border-white/"] { border-color: var(--cf-border) !important; }
+html.light [class*="border-white"] { border-color: var(--cf-border) !important; }
+html.light [class*="divide-white/"] > * + * { border-color: var(--cf-border) !important; }
+
+/* ── Inputs ── */
+html.light input,
+html.light textarea {
+  color: var(--cf-text-primary) !important;
+  background-color: var(--cf-bg-card) !important;
+}
+html.light input:focus,
+html.light textarea:focus { outline-color: #6366f1; }
+
+/* ── Sidebar active states ── */
+html.light [class*="bg-indigo-500/15"] { background-color: rgba(99,102,241,0.12) !important; }
+html.light [class*="bg-indigo-500/10"] { background-color: rgba(99,102,241,0.09) !important; }
+
+/* ── Scrollbar ── */
+html.light ::-webkit-scrollbar-track { background: var(--cf-bg-base); }
+html.light ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+html.light ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 /* React Flow overrides */
 .react-flow {

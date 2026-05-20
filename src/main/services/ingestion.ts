@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
 import { join, extname, basename, dirname } from 'path'
 import { execSync } from 'child_process'
+import { createHash } from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import chokidar, { FSWatcher } from 'chokidar'
 import type { DatabaseService } from './database'
@@ -820,6 +821,12 @@ export class IngestionService {
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
+  // Deterministic ID: same source + file + chunk = same ID on every sync → no duplicates
+  private stableId(...parts: string[]): string {
+    const hash = createHash('sha1').update(parts.join(':::')).digest('hex')
+    return `${hash.slice(0,8)}-${hash.slice(8,12)}-4${hash.slice(13,16)}-${hash.slice(16,20)}-${hash.slice(20,32)}`
+  }
+
   private makeNode(
     content: string,
     type: MemoryNode['type'],
@@ -828,8 +835,18 @@ export class IngestionService {
     meta: Record<string, unknown>
   ): MemoryNode {
     const { title, ...rest } = meta
+    const path = meta.path as string | undefined
+    const chunkIndex = meta.chunkIndex as number | undefined
+    const convIndex = meta.conversationIndex as number | undefined
+
+    const id = path !== undefined && chunkIndex !== undefined
+      ? this.stableId(source.id, path, String(chunkIndex))
+      : convIndex !== undefined && chunkIndex !== undefined
+        ? this.stableId(source.id, String(convIndex), String(chunkIndex))
+        : uuidv4()
+
     return {
-      id: uuidv4(),
+      id,
       title: (title as string) || basename(source.path),
       content,
       type,

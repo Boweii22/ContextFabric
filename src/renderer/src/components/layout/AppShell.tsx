@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, GitBranch, Clock, MessageSquare, Database,
   Settings, Shield, ChevronLeft, ChevronRight, Sparkles,
-  Zap, Search, Bell
+  Zap, Search, Bell, Sun, Moon
 } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { cn } from '../../lib/utils'
@@ -28,7 +28,7 @@ const BOTTOM_NAV = [
 export default function AppShell(): React.ReactElement {
   const location = useLocation()
   const navigate = useNavigate()
-  const { sidebarCollapsed, setSidebarCollapsed, stats, ollamaConnected } = useAppStore()
+  const { sidebarCollapsed, setSidebarCollapsed, stats, ollamaConnected, isDarkMode, toggleTheme } = useAppStore()
 
   return (
     <div className="flex flex-col h-screen bg-cosmos-900 overflow-hidden">
@@ -121,6 +121,22 @@ export default function AppShell(): React.ReactElement {
 
           {/* Bottom nav */}
           <div className="px-2 pb-4 space-y-0.5 border-t border-white/[0.04] pt-2">
+            {/* Theme toggle */}
+            <button
+              onClick={toggleTheme}
+              className="w-full flex items-center gap-3 px-2.5 py-2 rounded-xl text-sm transition-all duration-150 text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]"
+              title={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {isDarkMode
+                ? <Sun className="w-4 h-4 shrink-0" />
+                : <Moon className="w-4 h-4 shrink-0" />}
+              {!sidebarCollapsed && (
+                <span className="font-medium whitespace-nowrap">
+                  {isDarkMode ? 'Light Mode' : 'Dark Mode'}
+                </span>
+              )}
+            </button>
+
             {BOTTOM_NAV.map(({ path, icon: Icon, label }) => {
               const isActive = location.pathname === path
               return (

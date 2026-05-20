@@ -34,6 +34,10 @@ export default function App(): React.ReactElement {
   } = useAppStore()
 
   useEffect(() => {
+    // Apply persisted theme before first paint
+    if (localStorage.getItem('cf_theme') === 'light') {
+      document.documentElement.classList.add('light')
+    }
     loadInitialData()
     setupEventListeners()
   }, [])

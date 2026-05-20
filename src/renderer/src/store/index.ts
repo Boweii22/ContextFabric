@@ -71,6 +71,10 @@ interface AppStore {
   setSidebarCollapsed: (v: boolean) => void
   rightPanelOpen: boolean
   setRightPanelOpen: (v: boolean) => void
+
+  // Theme
+  isDarkMode: boolean
+  toggleTheme: () => void
 }
 
 export const useAppStore = create<AppStore>()(
@@ -147,5 +151,13 @@ export const useAppStore = create<AppStore>()(
     setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
     rightPanelOpen: false,
     setRightPanelOpen: (v) => set({ rightPanelOpen: v }),
+
+    isDarkMode: localStorage.getItem('cf_theme') !== 'light',
+    toggleTheme: () => set(state => {
+      const next = !state.isDarkMode
+      localStorage.setItem('cf_theme', next ? 'dark' : 'light')
+      document.documentElement.classList.toggle('light', !next)
+      return { isDarkMode: next }
+    }),
   }))
 )
