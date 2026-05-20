@@ -104,13 +104,15 @@ export function registerIpcHandlers(
     let detectedConflicts: string[] = []
     try {
       const r = await ollama.queryWithContext(
-        query, contextChunks, importLines, sourceMeta, decisionChain, conflicts
+        query, contextChunks, importLines, sourceMeta, decisionChain, conflicts,
+        (chunk) => { getWindow()?.webContents.send('query:chunk', chunk) }
       )
       answer = r.answer
       reasoning = r.reasoning
       citations = r.citations
       detectedConflicts = r.detectedConflicts
-    } catch {
+    } catch (aiErr) {
+      console.error('[Query] Ollama error:', aiErr instanceof Error ? aiErr.message : aiErr)
       if (merged.length > 0) {
         answer = `Here's what I found in your knowledge base:\n\n` +
           merged.slice(0, 3).map((r, i) =>
@@ -272,6 +274,10 @@ export function registerIpcHandlers(
     if (['ollamaUrl', 'ollamaModel', 'embeddingModel'].includes(key as string)) {
       const settings = db.getAllSettings()
       ollama.updateConfig(settings.ollamaUrl, settings.ollamaModel, settings.embeddingModel)
+    }
+    if (['geminiApiKey', 'geminiModel'].includes(key as string)) {
+      const settings = db.getAllSettings()
+      ollama.setGeminiKey(settings.geminiApiKey || '', settings.geminiModel)
     }
 
     return true

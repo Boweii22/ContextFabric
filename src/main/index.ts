@@ -67,7 +67,15 @@ async function initialize(): Promise<void> {
   db = new DatabaseService()
   await db.initialize()
 
-  ollama = new OllamaService()
+  const settings = db.getAllSettings()
+  ollama = new OllamaService(settings.ollamaUrl, settings.ollamaModel, settings.embeddingModel)
+
+  // Load Gemini API key for OOM fallback
+  if (settings.geminiApiKey) ollama.setGeminiKey(settings.geminiApiKey, settings.geminiModel)
+
+  // Create a low-memory Ollama model variant (num_ctx=1024) so large models like
+  // gemma4:e4b can run on 16 GB machines without KV-cache OOM errors.
+  await ollama.ensureConstrainedModel()
 
   ingestion = registerIpcHandlers(db, ollama, () => mainWindow)
   startApiServer(db, ollama, 47821)

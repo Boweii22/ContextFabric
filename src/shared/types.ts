@@ -106,6 +106,8 @@ export interface AppSettings {
   encryption: boolean
   encryptionKey?: string
   allowedApps: Record<string, boolean>  // app identifier → globally allowed
+  geminiApiKey?: string
+  geminiModel?: string
 }
 
 export interface ContextToken {

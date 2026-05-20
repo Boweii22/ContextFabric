@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid'
 import chokidar, { FSWatcher } from 'chokidar'
 import type { DatabaseService } from './database'
 import type { OllamaService } from './ollama'
-import type { MemoryNode, DataSource, Entity, ProcessingStatus } from '../../shared/types'
+import type { MemoryNode, MemoryEdge, DataSource, Entity, ProcessingStatus } from '../../shared/types'
 
 type StatusCallback = (status: ProcessingStatus) => void
 
@@ -184,13 +184,14 @@ export class IngestionService {
     this.walkDir(source.path, (fullPath, stat) => {
       const ext = extname(fullPath).toLowerCase()
       if (!TEXT_EXTENSIONS.has(ext)) return
-      if (stat.size > 300_000) return
+      if (Number(stat?.size ?? 0) > 300_000) return
       try {
         const content = readFileSync(fullPath, 'utf-8')
         if (content.trim().length < 20) return
         const isCode = CODE_EXTENSIONS.has(ext)
+        const mtimeMs = Number(stat?.mtimeMs ?? Date.now())
         for (const [ci, chunk] of this.chunkText(content, isCode ? 3000 : 4000).entries()) {
-          nodes.push(this.makeNode(chunk, isCode ? 'code' : 'document', source, stat.mtimeMs, {
+          nodes.push(this.makeNode(chunk, isCode ? 'code' : 'document', source, mtimeMs, {
             title: `${basename(fullPath)}${ci > 0 ? ` (${ci + 1})` : ''}`,
             path: fullPath, ext, chunkIndex: ci,
           }))
@@ -249,13 +250,14 @@ export class IngestionService {
     this.walkDir(source.path, (fullPath, stat) => {
       const ext = extname(fullPath).toLowerCase()
       if (!TEXT_EXTENSIONS.has(ext)) return
-      if (stat.size > 300_000) return
+      if (Number(stat?.size ?? 0) > 300_000) return
       try {
         const content = readFileSync(fullPath, 'utf-8')
         if (content.trim().length < 20) return
         const isCode = CODE_EXTENSIONS.has(ext)
+        const mtimeMs = Number(stat?.mtimeMs ?? Date.now())
         for (const [ci, chunk] of this.chunkText(content, isCode ? 3000 : 4000).entries()) {
-          nodes.push(this.makeNode(chunk, isCode ? 'code' : 'document', source, stat.mtimeMs, {
+          nodes.push(this.makeNode(chunk, isCode ? 'code' : 'document', source, mtimeMs, {
             title: `${basename(fullPath)}${ci > 0 ? ` (${ci + 1})` : ''}`,
             path: fullPath, ext, chunkIndex: ci,
           }))
@@ -351,6 +353,7 @@ export class IngestionService {
 
     this.walkDir(source.path, (fullPath, stat) => {
       const ext = extname(fullPath).toLowerCase()
+      const mtimeMs = Number(stat?.mtimeMs ?? Date.now())
 
       try {
         if (ext === '.md') {
@@ -358,7 +361,7 @@ export class IngestionService {
           const content = readFileSync(fullPath, 'utf-8')
           if (content.trim().length < 20) return
           for (const [ci, chunk] of this.chunkText(content, 2000).entries()) {
-            nodes.push(this.makeNode(chunk, 'document', source, stat.mtimeMs, {
+            nodes.push(this.makeNode(chunk, 'document', source, mtimeMs, {
               title: `${this.notionPageTitle(fullPath)}${ci > 0 ? ` (${ci + 1})` : ''}`,
               path: fullPath, chunkIndex: ci, format: 'markdown',
             }))
@@ -370,7 +373,7 @@ export class IngestionService {
           const text = this.htmlToText(raw)
           if (text.length < 30) return
           for (const [ci, chunk] of this.chunkText(text, 4000).entries()) {
-            nodes.push(this.makeNode(chunk, 'document', source, stat.mtimeMs, {
+            nodes.push(this.makeNode(chunk, 'document', source, mtimeMs, {
               title: `${this.notionPageTitle(fullPath)}${ci > 0 ? ` (${ci + 1})` : ''}`,
               path: fullPath, chunkIndex: ci, format: 'html',
             }))
@@ -381,7 +384,7 @@ export class IngestionService {
           const text = this.csvToText(readFileSync(fullPath, 'utf-8'))
           if (text.length < 20) return
           for (const [ci, chunk] of this.chunkText(text, 4000).entries()) {
-            nodes.push(this.makeNode(chunk, 'document', source, stat.mtimeMs, {
+            nodes.push(this.makeNode(chunk, 'document', source, mtimeMs, {
               title: `${basename(fullPath, '.csv')} database${ci > 0 ? ` (${ci + 1})` : ''}`,
               path: fullPath, chunkIndex: ci, format: 'csv',
             }))

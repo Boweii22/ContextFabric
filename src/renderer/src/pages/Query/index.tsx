@@ -53,7 +53,18 @@ export default function QueryPage(): React.ReactElement {
   const [copied, setCopied] = useState(false)
   const currentQueryRef = useRef<string>('')
   const [displayedQuery, setDisplayedQuery] = useState<string>('')
+  const [streamingText, setStreamingText] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Subscribe to streaming tokens from the main process
+  useEffect(() => {
+    if (!isQuerying) { setStreamingText(''); return }
+    const handler = (...args: unknown[]) => {
+      setStreamingText(prev => prev + (args[0] as string))
+    }
+    api.on('query:chunk', handler)
+    return () => api.off('query:chunk', handler)
+  }, [isQuerying])
 
   // Pick up query passed via navigate state from Dashboard or any other page
   useEffect(() => {
@@ -75,6 +86,7 @@ export default function QueryPage(): React.ReactElement {
     currentQueryRef.current = query
     setDisplayedQuery(query)
     setInput('')
+    setStreamingText('')
     setIsQuerying(true)
     setQueryResult(null)
     setActiveSource(null)
@@ -217,18 +229,27 @@ export default function QueryPage(): React.ReactElement {
                     <div className="flex-1 p-4 rounded-2xl bg-cosmos-800 border border-white/[0.06]">
                       <div className="flex items-center gap-2 mb-3">
                         <span className="text-xs font-medium text-indigo-400">ContextFabric AI</span>
-                        <span className="text-2xs text-slate-600">searching & reasoning...</span>
+                        <span className="text-2xs text-slate-600">
+                          {streamingText ? 'generating...' : 'searching & reasoning...'}
+                        </span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        {[0, 1, 2].map(i => (
-                          <motion.div
-                            key={i}
-                            className="w-2 h-2 rounded-full bg-indigo-500"
-                            animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1.1, 0.8] }}
-                            transition={{ duration: 1.2, delay: i * 0.2, repeat: Infinity }}
-                          />
-                        ))}
-                      </div>
+                      {streamingText ? (
+                        <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
+                          {streamingText}
+                          <span className="inline-block w-0.5 h-4 bg-indigo-400 ml-0.5 animate-pulse align-middle" />
+                        </p>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          {[0, 1, 2].map(i => (
+                            <motion.div
+                              key={i}
+                              className="w-2 h-2 rounded-full bg-indigo-500"
+                              animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1.1, 0.8] }}
+                              transition={{ duration: 1.2, delay: i * 0.2, repeat: Infinity }}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </motion.div>

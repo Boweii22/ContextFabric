@@ -238,6 +238,7 @@ export default function MemoryGraphPage() {
     const searchLower = search.toLowerCase()
 
     function draw() {
+      if (!canvas) return
       const W = canvas.offsetWidth, H = canvas.offsetHeight
       ctx.clearRect(0, 0, W, H)
 

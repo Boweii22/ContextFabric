@@ -110,7 +110,7 @@ export default function SettingsPage(): React.ReactElement {
               />
             </SettingField>
 
-            <SettingField label="AI Model" hint="Gemma 3 models recommended">
+            <SettingField label="AI Model" hint="qwen2.5:0.5b is the low-memory default; larger models may need more RAM">
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -159,10 +159,37 @@ export default function SettingsPage(): React.ReactElement {
               <div className="p-4 rounded-xl bg-indigo-500/5 border border-indigo-500/15 text-xs font-mono">
                 <p className="text-indigo-400 font-sans font-semibold mb-2">Recommended setup:</p>
                 <p className="text-slate-400 font-sans mb-2">1. Install Ollama from <span className="text-indigo-400">ollama.ai</span></p>
-                <p className="text-cyan-400">ollama pull gemma4:e4b</p>
+                <p className="text-cyan-400">ollama pull qwen2.5:0.5b</p>
                 <p className="text-cyan-400">ollama pull nomic-embed-text</p>
               </div>
             )}
+          </SettingsSection>
+
+          {/* Google Gemini fallback */}
+          <SettingsSection title="Cloud AI Fallback (Google Gemini)" icon={<Zap className="w-4 h-4 text-emerald-400" />}>
+            <div className="p-3.5 rounded-xl bg-emerald-500/5 border border-emerald-500/15 text-xs mb-3">
+              <p className="text-emerald-400 font-semibold mb-1">Fix for RAM-limited machines</p>
+              <p className="text-slate-400">When local Ollama runs out of memory (gemma4:e4b needs ~12 GB), queries automatically fall back to Google&apos;s Gemini API. Get a free key at <span className="text-emerald-400">aistudio.google.com</span></p>
+            </div>
+            <SettingField label="Google AI Studio API Key" hint="Paste your key — stored locally, never shared">
+              <input
+                type="password"
+                value={(localSettings as AppSettings & { geminiApiKey?: string }).geminiApiKey || ''}
+                onChange={e => setLocalSettings({ ...localSettings, geminiApiKey: e.target.value } as AppSettings)}
+                onBlur={() => saveSetting('geminiApiKey' as keyof AppSettings, (localSettings as AppSettings & { geminiApiKey?: string }).geminiApiKey || '')}
+                placeholder="AIza..."
+                className="w-full bg-cosmos-700/50 border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/40 font-mono"
+              />
+            </SettingField>
+            <SettingField label="Gemini Model" hint="Default: gemma-3-27b-it — check aistudio.google.com for available Gemma models">
+              <input
+                type="text"
+                value={(localSettings as AppSettings & { geminiModel?: string }).geminiModel || 'gemma-3-27b-it'}
+                onChange={e => setLocalSettings({ ...localSettings, geminiModel: e.target.value } as AppSettings)}
+                onBlur={() => saveSetting('geminiModel' as keyof AppSettings, (localSettings as AppSettings & { geminiModel?: string }).geminiModel || 'gemma-3-27b-it')}
+                className="w-full bg-cosmos-700/50 border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/40"
+              />
+            </SettingField>
           </SettingsSection>
 
           {/* Privacy */}

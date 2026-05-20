@@ -15,6 +15,7 @@ declare global {
         getGraph: () => Promise<unknown>
         getTimeline: (limit?: number) => Promise<unknown>
         getStats: () => Promise<unknown>
+        getHistory: (limit?: number) => Promise<unknown>
       }
       sources: {
         list: () => Promise<unknown>

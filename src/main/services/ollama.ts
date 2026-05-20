@@ -21,14 +21,23 @@ export class OllamaService {
   private model: string
   private embeddingModel: string
   private enrichmentController: AbortController | null = null
+  private constrainedModelReady = false
+  private readonly constrainedModelName = 'cf-gemma4'
+  private readonly fallbackModel = 'qwen2.5:0.5b'
+  private readonly runtimeContext = 512
+  private geminiApiKey = ''
+  private geminiModel = 'gemma-3-27b-it'
 
-  // Called when a user query starts — aborts any in-progress enrichment Ollama call
+  setGeminiKey(apiKey: string, model?: string): void {
+    this.geminiApiKey = apiKey.trim()
+    if (model?.trim()) this.geminiModel = model.trim()
+  }
+
   abortEnrichment(): void {
     this.enrichmentController?.abort()
     this.enrichmentController = null
   }
 
-  // Used by enrichment calls so they can be cancelled mid-flight
   startEnrichmentCall(): AbortSignal {
     this.enrichmentController = new AbortController()
     return this.enrichmentController.signal
@@ -36,7 +45,7 @@ export class OllamaService {
 
   constructor(
     baseUrl = 'http://localhost:11434',
-    model = 'gemma4:e4b',
+    model = 'qwen2.5:0.5b',
     embeddingModel = 'nomic-embed-text'
   ) {
     this.baseUrl = baseUrl
@@ -49,7 +58,58 @@ export class OllamaService {
     this.baseUrl = baseUrl
     this.model = model
     this.embeddingModel = embeddingModel
+    this.constrainedModelReady = false
     this.client = axios.create({ baseURL: baseUrl, timeout: 300000 })
+    this.ensureConstrainedModel().catch(() => {})
+  }
+
+  // Creates a memory-limited Ollama model variant (num_ctx 1024) at startup.
+  // This pre-allocates only ~100 MB of KV cache instead of several GB,
+  // which is what causes "memory layout cannot be allocated" on 16 GB machines.
+  async ensureConstrainedModel(): Promise<void> {
+    if (this.constrainedModelReady) return
+    if (this.model === this.constrainedModelName) {
+      this.constrainedModelReady = true
+      return
+    }
+    if (!this.model.includes('gemma4')) return
+
+    const sourceModel = this.model
+
+    try {
+      console.log(`[Ollama] Creating memory-constrained model ${this.constrainedModelName} (num_ctx=${this.runtimeContext}) from ${sourceModel}...`)
+      const ctrl = new AbortController()
+      const tid = setTimeout(() => ctrl.abort(), 30000)
+
+      const res = await fetch(`${this.baseUrl}/api/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.constrainedModelName,
+          from: sourceModel,
+          parameters: {
+            num_ctx: this.runtimeContext,
+            num_predict: 192,
+            num_batch: 16,
+          },
+          stream: false,
+        }),
+        signal: ctrl.signal,
+      })
+      clearTimeout(tid)
+      const responseBody = await res.text()
+
+      if (res.ok) {
+        this.model = this.constrainedModelName
+        this.constrainedModelReady = true
+        console.log(`[Ollama] Ready: using ${this.constrainedModelName} (num_ctx=${this.runtimeContext}, low-memory)`)
+      } else {
+        console.warn(`[Ollama] Model creation failed (HTTP ${res.status}): ${responseBody.substring(0, 300)}`)
+        console.warn('[Ollama] Falling back to original model — OOM errors may occur')
+      }
+    } catch (err) {
+      console.warn('[Ollama] Could not create constrained model:', err instanceof Error ? err.message : err)
+    }
   }
 
   async isConnected(): Promise<boolean> {
@@ -79,23 +139,87 @@ export class OllamaService {
       .trim()
   }
 
-  private async generate(prompt: string, timeoutMs = 120000, signal?: AbortSignal): Promise<string> {
+  private lowMemoryOptions(numPredict = 192): Record<string, number> {
+    return {
+      num_ctx: this.runtimeContext,
+      num_predict: numPredict,
+      num_batch: 16,
+    }
+  }
+
+  private extractOllamaError(body: unknown): string {
+    if (!body) return ''
+    if (typeof body === 'string') {
+      try {
+        const parsed = JSON.parse(body) as { error?: string }
+        return parsed.error || body
+      } catch {
+        return body
+      }
+    }
+    if (typeof body === 'object') {
+      return (body as { error?: string }).error || JSON.stringify(body)
+    }
+    return String(body)
+  }
+
+  private isMemoryLayoutError(message: string): boolean {
+    return /memory layout cannot be allocated|out of memory|not enough memory/i.test(message)
+  }
+
+  private async unloadModel(model = this.model): Promise<void> {
     try {
-      const res = await this.client.post<OllamaGenerateResponse>('/api/generate', {
+      await fetch(`${this.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, prompt: '', stream: false, keep_alive: 0 }),
+      })
+    } catch {
+      // Best effort only. Ollama may already have unloaded the model.
+    }
+  }
+
+  private async switchToFallbackModel(reason: string): Promise<void> {
+    const previous = this.model
+    if (previous === this.fallbackModel) return
+
+    const models = await this.listModels()
+    const hasFallback = models.some(m => m.name === this.fallbackModel || m.name === `${this.fallbackModel}:latest`)
+    if (!hasFallback) {
+      throw new Error(`Fallback model ${this.fallbackModel} is not installed. Run: ollama pull ${this.fallbackModel}`)
+    }
+
+    console.warn(`[Ollama] ${reason}; switching from ${previous} to ${this.fallbackModel}`)
+    await this.unloadModel(previous)
+    this.model = this.fallbackModel
+    this.constrainedModelReady = false
+  }
+
+  private async generate(
+    prompt: string,
+    timeoutMs = 120000,
+    signal?: AbortSignal,
+    numPredict?: number
+  ): Promise<string> {
+    try {
+      const body: Record<string, unknown> = {
         model: this.model,
         prompt,
         stream: false,
-      }, { timeout: timeoutMs, signal })
-      return this.clean(res.data.response || '')
+        keep_alive: '0s',
+        options: this.lowMemoryOptions(numPredict ?? 192),
+      }
+
+      const res = await this.client.post<OllamaGenerateResponse>('/api/generate', body, { timeout: timeoutMs, signal })
+      const raw = res.data.response || ''
+      console.log('[Ollama] raw response length:', raw.length, '| first 120:', raw.substring(0, 120).replace(/\n/g, ' '))
+      return this.clean(raw)
     } catch (err: unknown) {
       const axiosErr = err as { response?: { status?: number; data?: unknown }; message?: string; code?: string }
       const status = axiosErr?.response?.status
       const body = axiosErr?.response?.data
 
-      let ollamaMsg = ''
-      if (body && typeof body === 'object') {
-        ollamaMsg = (body as { error?: string }).error || JSON.stringify(body)
-      }
+      const ollamaMsg = this.extractOllamaError(body)
 
       // Aborted (enrichment cancelled for a user query) — silent
       if (axiosErr?.code === 'ERR_CANCELED' || axiosErr?.message?.includes('canceled')) {
@@ -109,6 +233,7 @@ export class OllamaService {
 
       // On 500: retry once with a much shorter prompt
       if (status === 500) {
+        if (this.isMemoryLayoutError(ollamaMsg)) await this.unloadModel()
         console.warn('[Ollama] 500 on full prompt, retrying short. Ollama said:', ollamaMsg)
         const shortPrompt = prompt.length > 500
           ? prompt.substring(0, 500) + '\n\nAnswer briefly:'
@@ -116,11 +241,13 @@ export class OllamaService {
         try {
           const retry = await this.client.post<OllamaGenerateResponse>('/api/generate', {
             model: this.model, prompt: shortPrompt, stream: false,
+            keep_alive: '0s', options: this.lowMemoryOptions(96),
           }, { timeout: timeoutMs })
           return this.clean(retry.data.response || '')
         } catch (retryErr: unknown) {
           const rb = (retryErr as { response?: { data?: unknown } })?.response?.data
-          const rbMsg = rb && typeof rb === 'object' ? (rb as { error?: string }).error || '' : ''
+          const rbMsg = this.extractOllamaError(rb)
+          if (this.isMemoryLayoutError(rbMsg || ollamaMsg)) await this.unloadModel()
           throw new Error(`Ollama 500: ${rbMsg || ollamaMsg || 'model error — check ollama logs'}`)
         }
       }
@@ -157,57 +284,217 @@ export class OllamaService {
     return results
   }
 
+
+  // Google AI Studio streaming — automatic fallback when local Ollama has OOM errors
+  private async generateWithGemini(prompt: string, onChunk: (text: string) => void): Promise<string> {
+    if (!this.geminiApiKey) throw new Error('No Gemini API key configured')
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.geminiModel}:streamGenerateContent?key=${this.geminiApiKey}&alt=sse`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 512, temperature: 0.7 },
+      }),
+    })
+    if (!res.ok) {
+      const errText = await res.text()
+      throw new Error(`Gemini API ${res.status}: ${errText.substring(0, 200)}`)
+    }
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let fullText = ''
+    let buffer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const events = buffer.split('\n\n')
+        buffer = events.pop() || ''
+        for (const event of events) {
+          const line = event.replace(/^data:\s*/, '').trim()
+          if (!line || line === '[DONE]') continue
+          try {
+            const data = JSON.parse(line) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+            if (text) { fullText += text; onChunk(text) }
+          } catch { /* ignore */ }
+        }
+      }
+    } finally {
+      try { reader.releaseLock() } catch { /* ignore */ }
+    }
+    return this.clean(fullText)
+  }
+
+  // Streaming generate — calls onChunk for each visible token, filters <think> blocks live
+  private async generateStream(
+    prompt: string,
+    onChunk: (text: string) => void,
+    numPredict?: number,
+    signal?: AbortSignal
+  ): Promise<string> {
+    console.log(`[Ollama] generateStream using model: ${this.model}`)
+    const body: Record<string, unknown> = {
+      model: this.model,
+      prompt,
+      stream: true,
+      keep_alive: '0s',
+      options: this.lowMemoryOptions(numPredict ?? 192),
+    }
+    const controller = new AbortController()
+    if (signal) signal.addEventListener('abort', () => controller.abort())
+    const timeoutId = setTimeout(() => controller.abort(), 300000)
+
+    let res: Response
+    try {
+      res = await fetch(`${this.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+    } catch (err) {
+      clearTimeout(timeoutId)
+      const msg = err instanceof Error ? err.message : 'fetch failed'
+      if (msg.includes('abort') || msg.includes('cancel')) throw new Error('enrichment_aborted')
+      throw new Error(`Ollama connect failed: ${msg}`)
+    }
+
+    if (!res.ok) {
+      clearTimeout(timeoutId)
+      const errText = await res.text()
+      const msg = this.extractOllamaError(errText)
+      if (this.isMemoryLayoutError(msg)) await this.unloadModel()
+      throw new Error(`Ollama ${res.status}: ${msg || errText}`)
+    }
+
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let fullText = ''
+    let buffer = ''
+    let inThink = false
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const data = JSON.parse(line) as { response?: string; done?: boolean; error?: string }
+            if (data.error) throw new Error(data.error)
+            if (data.response) {
+              fullText += data.response
+              const tok = data.response
+              if (!inThink) {
+                if (tok.includes('<think>')) {
+                  inThink = true
+                  const before = tok.split('<think>')[0]
+                  if (before) onChunk(before)
+                } else {
+                  onChunk(tok)
+                }
+              } else {
+                if (tok.includes('</think>')) {
+                  inThink = false
+                  const after = tok.split('</think>').slice(1).join('')
+                  if (after) onChunk(after)
+                }
+              }
+            }
+          } catch (parseErr) {
+            if (parseErr instanceof Error && !parseErr.message.includes('JSON')) throw parseErr
+          }
+        }
+      }
+    } finally {
+      clearTimeout(timeoutId)
+      try { reader.releaseLock() } catch { /* already released */ }
+    }
+
+    return this.clean(fullText)
+  }
+
   async queryWithContext(
     userQuery: string,
     contextChunks: Array<{ content: string; source: string; timestamp: number; sourceType?: string }>,
     importLines: string[] = [],
     sourceMeta = '',
     decisionChain: string[] = [],
-    conflicts: string[] = []
+    conflicts: string[] = [],
+    onChunk?: (text: string) => void
   ): Promise<{
     answer: string
     reasoning: string
     citations: Array<{ index: number; title: string; sourceName: string }>
     detectedConflicts: string[]
   }> {
-    const chunks = contextChunks.slice(0, 4)
+    const chunks = contextChunks.slice(0, 2)
 
-    // ── Build structured prompt ───────────────────────────────────────────────
-    let prompt = `You are a personal AI assistant. Answer using ONLY the sources below.\n`
-    prompt += `Rules: cite sources as [1][2] etc. If two sources disagree, write "⚠️ Conflict: ..." and explain both sides.\n\n`
+    let prompt = `Answer the question in 2-4 sentences using only the facts below. Be direct. No thinking.\n\n`
 
-    // Labeled, typed sources
     if (chunks.length > 0) {
-      prompt += `Sources:\n`
       chunks.forEach((c, i) => {
-        const typeLabel = c.sourceType === 'code' ? 'code' : c.sourceType === 'conversation' ? 'chat' : 'doc'
-        prompt += `[${i + 1}] ${c.source} (${typeLabel})\n${c.content.substring(0, 220)}\n\n`
+        prompt += `[${i + 1}] ${c.source.split(' — ')[1] || c.source}: ${c.content.substring(0, 180).replace(/\n/g, ' ')}\n`
       })
+      prompt += '\n'
     }
 
-    // Decision history from timeline
-    if (decisionChain.length > 0) {
-      prompt += `Decision history:\n${decisionChain.slice(0, 4).map(d => `• ${d}`).join('\n')}\n\n`
-    }
-
-    // Known conflicts to surface
-    if (conflicts.length > 0) {
-      prompt += `Note — potential conflicts detected: ${conflicts.slice(0, 2).join('; ')}\n\n`
-    }
-
-    // Library context for stack questions
     if (importLines.length > 0) {
-      prompt += `Libraries: ${importLines.slice(0, 6).join(', ')}\n\n`
+      prompt += `Libraries: ${importLines.slice(0, 4).join(', ')}\n\n`
     }
 
-    prompt += `Question: ${userQuery}\nAnswer (with [N] citations):`
+    if (decisionChain.length > 0) {
+      prompt += `Key decisions: ${decisionChain.slice(0, 2).join(' | ')}\n\n`
+    }
 
-    // ── Generate ──────────────────────────────────────────────────────────────
+    prompt += `Q: ${userQuery}\nA:`
+
+    // ── Generate (streaming) — falls back to Gemini API on OOM ─────────────────
     let answer = ''
+    let usedGemini = false
+    let usedFallbackModel = false
     try {
-      answer = await this.generate(prompt, 180000)
+      answer = await this.generateStream(prompt, onChunk ?? (() => {}), 160)
     } catch (err) {
-      throw new Error(`Ollama failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+      const errMsg = err instanceof Error ? err.message : 'Unknown'
+      const isOom = /memory layout|cannot be allocated|model failed to load/i.test(errMsg)
+      if (isOom) {
+        try {
+          await this.switchToFallbackModel('Local model ran out of memory')
+          answer = await this.generateStream(prompt, onChunk ?? (() => {}), 160)
+          usedFallbackModel = true
+        } catch (fallbackErr) {
+          if (this.geminiApiKey) {
+            console.log(`[Ollama] Local fallback failed; using Google Gemini API (${this.geminiModel})...`)
+            try {
+              answer = await this.generateWithGemini(prompt, onChunk ?? (() => {}))
+              usedGemini = true
+            } catch (geminiErr) {
+              throw new Error(`Local fallback failed + Gemini failed: ${geminiErr instanceof Error ? geminiErr.message : 'unknown'}`)
+            }
+          } else {
+            throw new Error(`Ollama failed: ${fallbackErr instanceof Error ? fallbackErr.message : errMsg}`)
+          }
+        }
+      } else if (this.geminiApiKey && isOom) {
+        console.log(`[Ollama] OOM — falling back to Google Gemini API (${this.geminiModel})...`)
+        try {
+          answer = await this.generateWithGemini(prompt, onChunk ?? (() => {}))
+          usedGemini = true
+        } catch (geminiErr) {
+          throw new Error(`Ollama OOM + Gemini failed: ${geminiErr instanceof Error ? geminiErr.message : 'unknown'}`)
+        }
+      } else {
+        throw new Error(`Ollama failed: ${errMsg}`)
+      }
     }
 
     // ── Fallbacks ─────────────────────────────────────────────────────────────
@@ -244,7 +531,11 @@ export class OllamaService {
       detectedConflicts.push(m[1].trim())
     }
 
-    const reasoning = chunks.length > 0
+    const reasoning = usedGemini
+      ? `Answered via Google Gemini API (${this.geminiModel}) — local model unavailable due to RAM.`
+      : usedFallbackModel
+      ? `Answered via local fallback model (${this.fallbackModel}) because the selected model ran out of RAM.`
+      : chunks.length > 0
       ? `Reasoned across ${chunks.length} source(s) from ${[...new Set(chunks.map(c => c.source.split(' — ')[0]))].join(', ')}.${decisionChain.length > 0 ? ` Referenced ${decisionChain.length} past decision(s).` : ''}`
       : 'No matching sources found in your knowledge base.'
 
@@ -309,7 +600,7 @@ Text: ${text.substring(0, 600)}
 
 JSON:`
 
-      const response = await this.generate(prompt, 30000, this.enrichmentController?.signal)
+      const response = await this.generate(prompt, 30000, this.enrichmentController?.signal, 200)
       const match = response.match(/\[[\s\S]*?\]/)
       if (!match) return regexHits
 
@@ -341,13 +632,9 @@ JSON:`
     if (text.length < 300) return text.substring(0, maxLength)
 
     try {
-      const prompt = `Summarize the following in one sentence of max ${maxLength} characters. Be specific — mention key technologies, decisions, or topics. No filler words.
+      const prompt = `One sentence summary (max ${maxLength} chars), no thinking:\n${text.substring(0, 600)}\nSummary:`
 
-Text: ${text.substring(0, 1200)}
-
-One-sentence summary:`
-
-      const result = await this.generate(prompt, 30000, this.enrichmentController?.signal)
+      const result = await this.generate(prompt, 30000, this.enrichmentController?.signal, 100)
       const firstSentence = result.split(/[.\n]/)[0]?.trim() || result
       return firstSentence.substring(0, maxLength)
     } catch {

@@ -14,7 +14,7 @@ import SettingsPage from './pages/Settings'
 import PermissionsPage from './pages/Permissions'
 import type {
   DataSource, Stats, AppSettings, ProcessingStatus,
-  Entity, TimelineEvent
+  Entity, TimelineEvent, AIQueryResult
 } from '../../shared/types'
 
 export default function App(): React.ReactElement {
