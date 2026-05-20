@@ -161,8 +161,11 @@ export const useAppStore = create<AppStore>()(
     isDarkMode: localStorage.getItem('cf_theme') !== 'light',
     toggleTheme: () => set(state => {
       const next = !state.isDarkMode
+      const root = document.documentElement
+      root.classList.add('theme-transitioning')
       localStorage.setItem('cf_theme', next ? 'dark' : 'light')
-      document.documentElement.classList.toggle('light', !next)
+      root.classList.toggle('light', !next)
+      window.setTimeout(() => root.classList.remove('theme-transitioning'), 700)
       return { isDarkMode: next }
     }),
   }))

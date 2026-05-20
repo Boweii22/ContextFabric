@@ -800,13 +800,7 @@ function MemoryDetailDrawer({
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 24 }}
       transition={{ type: 'spring', stiffness: 520, damping: 38 }}
-      className="absolute right-3 top-3 bottom-3 w-[380px] flex flex-col rounded-2xl overflow-hidden"
-      style={{
-        background: 'rgba(8,11,20,0.96)',
-        backdropFilter: 'blur(24px)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        boxShadow: '0 24px 70px rgba(0,0,0,0.72)',
-      }}
+      className="memory-detail-drawer absolute right-3 top-3 bottom-3 w-[380px] flex flex-col rounded-2xl overflow-hidden"
     >
       <div className="px-4 py-3.5 border-b border-white/[0.06]">
         <div className="flex items-center justify-between gap-3 mb-3">

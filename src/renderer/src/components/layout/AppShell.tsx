@@ -137,21 +137,11 @@ export default function AppShell(): React.ReactElement {
 
           {/* Bottom nav */}
           <div className="px-2 pb-4 space-y-0.5 border-t border-white/[0.04] pt-2">
-            {/* Theme toggle */}
-            <button
-              onClick={toggleTheme}
-              className="w-full flex items-center gap-3 px-2.5 py-2 rounded-xl text-sm transition-all duration-150 text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]"
-              title={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-            >
-              {isDarkMode
-                ? <Sun className="w-4 h-4 shrink-0" />
-                : <Moon className="w-4 h-4 shrink-0" />}
-              {!sidebarCollapsed && (
-                <span className="font-medium whitespace-nowrap">
-                  {isDarkMode ? 'Light Mode' : 'Dark Mode'}
-                </span>
-              )}
-            </button>
+            <ThemeToggle
+              isDarkMode={isDarkMode}
+              collapsed={sidebarCollapsed}
+              onToggle={toggleTheme}
+            />
 
             {BOTTOM_NAV.map(({ path, icon: Icon, label }) => {
               const isActive = location.pathname === path
@@ -208,6 +198,100 @@ export default function AppShell(): React.ReactElement {
 
       <StatusBar />
     </div>
+  )
+}
+
+function ThemeToggle({
+  isDarkMode,
+  collapsed,
+  onToggle,
+}: {
+  isDarkMode: boolean
+  collapsed: boolean
+  onToggle: () => void
+}) {
+  const label = isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'
+
+  return (
+    <button
+      onClick={onToggle}
+      className={cn(
+        'theme-toggle group relative w-full overflow-hidden rounded-xl border transition-all duration-300',
+        'border-white/[0.06] bg-white/[0.035] hover:border-indigo-500/25 hover:bg-white/[0.055]',
+        collapsed ? 'h-9 px-0' : 'h-10 px-2.5'
+      )}
+      title={label}
+      aria-label={label}
+      aria-pressed={!isDarkMode}
+    >
+      <motion.div
+        className="absolute inset-0 opacity-80"
+        animate={{
+          background: isDarkMode
+            ? 'linear-gradient(135deg, rgba(99,102,241,0.12), rgba(6,182,212,0.04))'
+            : 'linear-gradient(135deg, rgba(251,191,36,0.18), rgba(99,102,241,0.08))',
+        }}
+        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+      />
+
+      <div className={cn(
+        'relative flex items-center h-full',
+        collapsed ? 'justify-center' : 'justify-between gap-3'
+      )}>
+        {!collapsed && (
+          <div className="flex items-center gap-2 min-w-0">
+            <motion.div
+              className="w-6 h-6 rounded-lg flex items-center justify-center"
+              animate={{
+                color: isDarkMode ? '#FBBF24' : '#6366F1',
+                backgroundColor: isDarkMode ? 'rgba(251,191,36,0.12)' : 'rgba(99,102,241,0.12)',
+                rotate: isDarkMode ? 0 : -12,
+              }}
+              transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.span
+                  key={isDarkMode ? 'sun' : 'moon'}
+                  initial={{ opacity: 0, scale: 0.5, rotate: -35 }}
+                  animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                  exit={{ opacity: 0, scale: 0.5, rotate: 35 }}
+                  transition={{ duration: 0.22, ease: 'easeOut' }}
+                >
+                  {isDarkMode ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+                </motion.span>
+              </AnimatePresence>
+            </motion.div>
+            <span className="font-medium whitespace-nowrap text-sm text-slate-400 group-hover:text-slate-200 transition-colors">
+              {isDarkMode ? 'Light Mode' : 'Dark Mode'}
+            </span>
+          </div>
+        )}
+
+        <div className={cn(
+          'relative rounded-full border border-white/[0.08] bg-cosmos-950/60 shadow-inner',
+          collapsed ? 'w-9 h-5' : 'w-11 h-6 shrink-0'
+        )}>
+          <motion.div
+            className="absolute top-1/2 -translate-y-1/2 rounded-full shadow-lg flex items-center justify-center"
+            animate={{
+              x: isDarkMode ? 2 : (collapsed ? 18 : 22),
+              backgroundColor: isDarkMode ? '#111827' : '#FFFFFF',
+              color: isDarkMode ? '#FBBF24' : '#6366F1',
+              boxShadow: isDarkMode
+                ? '0 0 18px rgba(251,191,36,0.22), 0 2px 8px rgba(0,0,0,0.35)'
+                : '0 0 18px rgba(99,102,241,0.20), 0 2px 8px rgba(15,23,42,0.16)',
+            }}
+            transition={{ type: 'spring', stiffness: 520, damping: 32 }}
+            style={{
+              width: collapsed ? 16 : 18,
+              height: collapsed ? 16 : 18,
+            }}
+          >
+            {isDarkMode ? <Sun className="w-2.5 h-2.5" /> : <Moon className="w-2.5 h-2.5" />}
+          </motion.div>
+        </div>
+      </div>
+    </button>
   )
 }
 

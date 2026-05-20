@@ -33,6 +33,7 @@
     --input: 217 33% 13%;
     --ring: 239 84% 67%;
     --radius: 0.75rem;
+    color-scheme: dark;
   }
 }
 
@@ -47,6 +48,30 @@
       radial-gradient(ellipse at 20% 50%, rgba(99, 102, 241, 0.08) 0%, transparent 60%),
       radial-gradient(ellipse at 80% 20%, rgba(139, 92, 246, 0.06) 0%, transparent 50%),
       radial-gradient(ellipse at 60% 80%, rgba(6, 182, 212, 0.04) 0%, transparent 50%);
+  }
+
+  html.theme-transitioning,
+  html.theme-transitioning body,
+  html.theme-transitioning body *,
+  html.theme-transitioning body *::before,
+  html.theme-transitioning body *::after {
+    transition:
+      background-color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+      background 520ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 520ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 420ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 520ms cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 360ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html.theme-transitioning,
+    html.theme-transitioning body,
+    html.theme-transitioning body *,
+    html.theme-transitioning body *::before,
+    html.theme-transitioning body *::after {
+      transition-duration: 1ms !important;
+    }
   }
 
   input, textarea {
@@ -121,6 +146,13 @@
     @apply hover:border-indigo-500/30 hover:shadow-card-hover transition-all duration-200;
   }
 
+  .memory-detail-drawer {
+    background: color-mix(in srgb, var(--cf-bg-card) 96%, transparent);
+    border: 1px solid var(--cf-border);
+    box-shadow: 0 24px 70px rgba(0,0,0,0.72);
+    backdrop-filter: blur(24px);
+  }
+
   .btn-primary {
     @apply bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-4 py-2.5 rounded-xl
            transition-all duration-200 active:scale-95 shadow-glow-sm;
@@ -129,6 +161,27 @@
   .btn-ghost {
     @apply text-slate-400 hover:text-slate-200 hover:bg-white/[0.06] px-3 py-2 rounded-lg
            transition-all duration-150;
+  }
+
+  .theme-toggle {
+    isolation: isolate;
+  }
+
+  .theme-toggle::after {
+    content: '';
+    position: absolute;
+    inset: -45%;
+    background: radial-gradient(circle at 20% 20%, rgba(255,255,255,0.22), transparent 28%);
+    opacity: 0;
+    transform: translateX(-18%) rotate(12deg);
+    transition: opacity 280ms ease, transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .theme-toggle:hover::after {
+    opacity: 1;
+    transform: translateX(18%) rotate(12deg);
   }
 
   .text-label {
@@ -156,6 +209,16 @@ html.light {
   --cf-text-primary: #0f172a;
   --cf-text-secondary: #475569;
   --cf-text-muted: #94a3b8;
+  --background: 214 32% 95%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+  --muted: 214 32% 91%;
+  --muted-foreground: 215 16% 47%;
+  --border: 214 32% 88%;
+  --input: 214 32% 88%;
 }
 
 html.light body {
@@ -182,6 +245,11 @@ html.light .surface-card {
   background-color: var(--cf-bg-card) !important;
   border-color: var(--cf-border) !important;
   box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.06) !important;
+}
+html.light .memory-detail-drawer {
+  background: rgba(255,255,255,0.94);
+  border-color: var(--cf-border);
+  box-shadow: 0 24px 70px rgba(15,23,42,0.18), 0 0 0 1px rgba(15,23,42,0.05);
 }
 html.light .glass {
   background-color: rgba(255,255,255,0.8) !important;
@@ -222,6 +290,14 @@ html.light textarea:focus { outline-color: #6366f1; }
 /* ── Sidebar active states ── */
 html.light [class*="bg-indigo-500/15"] { background-color: rgba(99,102,241,0.12) !important; }
 html.light [class*="bg-indigo-500/10"] { background-color: rgba(99,102,241,0.09) !important; }
+
+html.light .theme-toggle {
+  box-shadow: 0 8px 24px rgba(99,102,241,0.10), inset 0 1px 0 rgba(255,255,255,0.72);
+}
+
+html.light .theme-toggle [class*="bg-cosmos-950"] {
+  background-color: rgba(226,232,240,0.88) !important;
+}
 
 /* ── Scrollbar ── */
 html.light ::-webkit-scrollbar-track { background: var(--cf-bg-base); }
