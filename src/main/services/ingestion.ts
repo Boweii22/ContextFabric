@@ -601,13 +601,130 @@ export class IngestionService {
       message: `Saved ${capped.length} nodes — upgrading embeddings in background`,
       startTime: Date.now() })
 
-    // 4. Queue ALL nodes for background Gemma enrichment + real embed upgrade
+    // 4. Build graph edges — entity co-occurrence, file structure, code deps
+    this.buildRelationships(capped)
+
+    // 5. Queue ALL nodes for background Gemma enrichment + real embed upgrade
     for (const node of capped) {
       this.enrichmentQueue.push({ node, source })
     }
     this.runEnrichmentQueue()
 
     return capped.length
+  }
+
+  // ─── Edge / relationship building ──────────────────────────────────────────
+
+  private buildRelationships(nodes: MemoryNode[]): void {
+    const edges: MemoryEdge[] = []
+
+    // ── 1. "related" — entity co-occurrence across nodes ──────────────────────
+    // Build entity → [nodeId] map
+    const entityToNodes = new Map<string, string[]>()
+    for (const node of nodes) {
+      for (const entity of node.entities) {
+        const key = entity.toLowerCase()
+        if (!entityToNodes.has(key)) entityToNodes.set(key, [])
+        entityToNodes.get(key)!.push(node.id)
+      }
+    }
+
+    // Count shared entities between every pair
+    const pairWeight = new Map<string, number>()
+    for (const [, nodeIds] of entityToNodes) {
+      // Skip entities that appear in too many nodes — not meaningful as a link
+      if (nodeIds.length < 2 || nodeIds.length > 30) continue
+      for (let i = 0; i < nodeIds.length; i++) {
+        for (let j = i + 1; j < nodeIds.length; j++) {
+          const key = nodeIds[i] < nodeIds[j]
+            ? `${nodeIds[i]}:${nodeIds[j]}`
+            : `${nodeIds[j]}:${nodeIds[i]}`
+          pairWeight.set(key, (pairWeight.get(key) || 0) + 1)
+        }
+      }
+    }
+
+    // Only keep pairs sharing ≥2 entities, cap total related edges at 300
+    const relatedPairs = [...pairWeight.entries()]
+      .filter(([, w]) => w >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 300)
+
+    for (const [pair, weight] of relatedPairs) {
+      const [source, target] = pair.split(':')
+      edges.push({
+        id: uuidv4(), source, target,
+        type: 'related',
+        weight: Math.min(weight / 6, 1),
+        label: `${weight} shared topics`,
+        metadata: {},
+      })
+    }
+
+    // ── 2. "belongs_to" — consecutive chunks of the same file ─────────────────
+    // Group nodes by their source file path (metadata.path)
+    const fileGroups = new Map<string, MemoryNode[]>()
+    for (const node of nodes) {
+      const path = (node.metadata as Record<string, unknown>).path as string | undefined
+      if (!path) continue
+      if (!fileGroups.has(path)) fileGroups.set(path, [])
+      fileGroups.get(path)!.push(node)
+    }
+
+    for (const [, fileNodes] of fileGroups) {
+      if (fileNodes.length < 2) continue
+      const sorted = fileNodes.sort((a, b) => {
+        const ai = ((a.metadata as Record<string, unknown>).chunkIndex as number) ?? 0
+        const bi = ((b.metadata as Record<string, unknown>).chunkIndex as number) ?? 0
+        return ai - bi
+      })
+      for (let i = 0; i < sorted.length - 1; i++) {
+        edges.push({
+          id: uuidv4(),
+          source: sorted[i].id,
+          target: sorted[i + 1].id,
+          type: 'belongs_to',
+          weight: 0.4,
+          label: 'continues in',
+          metadata: {},
+        })
+      }
+    }
+
+    // ── 3. "depends_on" — code imports referencing other indexed file titles ───
+    const codeNodes = nodes.filter(n => n.type === 'code')
+    const allTitles = new Map(nodes.map(n => [n.title.toLowerCase().replace(/\s*\(\d+\)$/, ''), n.id]))
+
+    for (const codeNode of codeNodes) {
+      const importLines = codeNode.content
+        .split('\n')
+        .filter(l => /^(import |from |require\()/.test(l.trim()))
+
+      for (const line of importLines) {
+        // Extract the module/file name from the import
+        const match = line.match(/['"]([^'"]+)['"]/)?.[1]
+        if (!match) continue
+        const stem = match.split('/').pop()?.replace(/\.[^.]+$/, '').toLowerCase()
+        if (!stem) continue
+        const targetId = allTitles.get(stem) || allTitles.get(`${stem}.ts`) || allTitles.get(`${stem}.py`)
+        if (targetId && targetId !== codeNode.id) {
+          edges.push({
+            id: uuidv4(),
+            source: codeNode.id,
+            target: targetId,
+            type: 'depends_on',
+            weight: 0.6,
+            label: `imports ${stem}`,
+            metadata: {},
+          })
+        }
+      }
+    }
+
+    if (edges.length > 0) {
+      this.db.batchUpsertEdges(edges)
+      console.log(`[Graph] Built ${edges.length} edges (related: ${relatedPairs.length}, belongs_to: ${edges.filter(e => e.type === 'belongs_to').length}, depends_on: ${edges.filter(e => e.type === 'depends_on').length})`)
+    }
   }
 
   // ─── Background Gemma enrichment ───────────────────────────────────────────
@@ -638,8 +755,9 @@ export class IngestionService {
       try {
         const decision = await this.ollama.extractDecision(node.content)
         if (decision.isDecision && decision.decision) {
+          const eventId = uuidv4()
           this.db.upsertTimelineEvent({
-            id: uuidv4(), nodeId: node.id,
+            id: eventId, nodeId: node.id,
             title: decision.decision,
             description: [decision.reasoning,
               decision.alternatives?.length ? `Alternatives: ${decision.alternatives.join(', ')}` : '',
@@ -648,6 +766,17 @@ export class IngestionService {
             sourceId: source.id, sourceName: source.name,
             relatedEntities: node.entities, significance: 'high',
           })
+          // Link this node to others that share its entities using "decided_by"
+          const related = this.db.getEdgesForNode(node.id)
+          for (const edge of related.slice(0, 3)) {
+            const otherId = edge.source === node.id ? edge.target : edge.source
+            this.db.upsertEdge({
+              id: uuidv4(), source: node.id, target: otherId,
+              type: 'decided_by', weight: 0.8,
+              label: decision.decision?.substring(0, 40),
+              metadata: { decisionEventId: eventId },
+            })
+          }
         }
       } catch { /* skip */ }
     }

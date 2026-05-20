@@ -490,6 +490,13 @@ export class DatabaseService {
     this.logChange('memory_edges', edge.id, existing ? 'update' : 'insert', version)
   }
 
+  batchUpsertEdges(edges: MemoryEdge[]): void {
+    const tx = this.db.transaction(() => {
+      for (const edge of edges) this.upsertEdge(edge)
+    })
+    tx()
+  }
+
   getEdgesForNode(nodeId: string): MemoryEdge[] {
     const rows = this.db.prepare(`
       SELECT * FROM memory_edges

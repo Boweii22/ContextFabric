@@ -18,7 +18,7 @@ export interface MemoryEdge {
   id: string
   source: string
   target: string
-  type: 'related' | 'references' | 'contradicts' | 'extends' | 'belongs_to' | 'decided_by'
+  type: 'related' | 'references' | 'contradicts' | 'extends' | 'belongs_to' | 'decided_by' | 'caused_by' | 'replaced' | 'depends_on'
   weight: number
   label?: string
   metadata: Record<string, unknown>
