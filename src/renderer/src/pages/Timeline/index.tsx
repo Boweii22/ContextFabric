@@ -1,10 +1,11 @@
-import React, { useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Clock, Filter, Zap, CheckCircle, TrendingUp, Search, GitBranch, ChevronDown, ExternalLink } from 'lucide-react'
+import { Clock, Zap, CheckCircle, TrendingUp, Search, GitBranch, ChevronDown, RefreshCw } from 'lucide-react'
+import { api } from '../../lib/api'
 import { useAppStore } from '../../store'
-import { formatDate, getTypeColor } from '../../lib/utils'
+import { formatDate } from '../../lib/utils'
 import { cn } from '../../lib/utils'
-import type { TimelineEvent } from '../../../../shared/types'
+import type { MemoryNode, SearchResult, TimelineEvent } from '../../../../shared/types'
 
 const EVENT_ICONS: Record<TimelineEvent['type'], React.ReactNode> = {
   decision: <Zap className="w-3.5 h-3.5" />,
@@ -31,12 +32,41 @@ const SIGNIFICANCE_STYLES = {
 }
 
 export default function TimelinePage(): React.ReactElement {
-  const { timeline } = useAppStore()
+  const { timeline, setTimeline } = useAppStore()
+  const [localTimeline, setLocalTimeline] = useState<TimelineEvent[]>(timeline)
+  const [loading, setLoading] = useState(true)
+  const [usingDerivedEvents, setUsingDerivedEvents] = useState(false)
   const [filter, setFilter] = useState<TimelineEvent['type'] | null>(null)
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
-  const filtered = timeline.filter(event => {
+  const loadTimeline = useCallback(async () => {
+    setLoading(true)
+    try {
+      const events = await api.memory.getTimeline(200) as TimelineEvent[]
+      if (events.length > 0) {
+        setTimeline(events)
+        setLocalTimeline(events)
+        setUsingDerivedEvents(false)
+        return
+      }
+
+      const recent = await api.memory.search('', 200) as SearchResult[]
+      const derived = deriveTimelineFromNodes(recent.map(r => r.node))
+      setLocalTimeline(derived)
+      setUsingDerivedEvents(derived.length > 0)
+    } catch (error) {
+      console.error('[Timeline] Failed to load timeline:', error)
+      setLocalTimeline(current => current.length > 0 ? current : timeline)
+      setUsingDerivedEvents(false)
+    } finally {
+      setLoading(false)
+    }
+  }, [setTimeline])
+
+  useEffect(() => { loadTimeline() }, [loadTimeline])
+
+  const filtered = localTimeline.filter(event => {
     if (filter && event.type !== filter) return false
     if (search && !event.title.toLowerCase().includes(search.toLowerCase()) &&
         !event.description.toLowerCase().includes(search.toLowerCase())) return false
@@ -71,9 +101,26 @@ export default function TimelinePage(): React.ReactElement {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-white">Timeline</h1>
-            <p className="text-sm text-slate-500 mt-1">How your thinking evolved over time</p>
+            <p className="text-sm text-slate-500 mt-1">
+              {usingDerivedEvents
+                ? 'Built from your indexed memories while decision extraction catches up'
+                : 'How your thinking evolved over time'}
+            </p>
           </div>
+          <button
+            onClick={loadTimeline}
+            className="w-8 h-8 rounded-lg border border-white/[0.06] text-slate-500 hover:text-white hover:border-white/[0.12] flex items-center justify-center transition-all"
+            title="Refresh timeline"
+          >
+            <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />
+          </button>
         </div>
+
+        {usingDerivedEvents && (
+          <div className="mb-5 rounded-xl border border-cyan-500/15 bg-cyan-500/[0.04] px-3 py-2 text-xs text-cyan-200/80">
+            Showing memory activity because no extracted decision events are stored yet.
+          </div>
+        )}
 
         {/* Filters */}
         <div className="flex items-center gap-3 mb-6">
@@ -111,7 +158,12 @@ export default function TimelinePage(): React.ReactElement {
         </div>
 
         {/* Timeline */}
-        {timeline.length === 0 ? (
+        {loading ? (
+          <div className="text-center py-20">
+            <Clock className="w-8 h-8 text-indigo-400 mx-auto mb-4 animate-pulse" />
+            <p className="text-sm text-slate-500">Loading timeline...</p>
+          </div>
+        ) : localTimeline.length === 0 ? (
           <div className="text-center py-20">
             <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 flex items-center justify-center mx-auto mb-4">
               <Clock className="w-8 h-8 text-indigo-400" />
@@ -242,4 +294,39 @@ export default function TimelinePage(): React.ReactElement {
       </div>
     </div>
   )
+}
+
+function deriveTimelineFromNodes(nodes: MemoryNode[]): TimelineEvent[] {
+  return nodes
+    .slice()
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, 80)
+    .map((node, index) => ({
+      id: `derived-${node.id}`,
+      nodeId: node.id,
+      title: node.title || `Memory ${index + 1}`,
+      description: node.summary || node.content.substring(0, 220),
+      timestamp: node.timestamp,
+      type: inferTimelineType(node),
+      sourceId: node.sourceId,
+      sourceName: node.sourceName,
+      relatedEntities: node.entities.slice(0, 8),
+      significance: inferSignificance(node),
+    }))
+}
+
+function inferTimelineType(node: MemoryNode): TimelineEvent['type'] {
+  const text = `${node.title} ${node.summary || ''} ${node.content}`.toLowerCase()
+  if (node.type === 'decision' || /\b(decided|decision|choose|chosen|settled)\b/.test(text)) return 'decision'
+  if (/\b(switched|pivot|changed|instead|moved from|migrated)\b/.test(text)) return 'pivot'
+  if (/\b(reject|dropped|removed|avoid|failed|error)\b/.test(text)) return 'rejection'
+  if (/\b(adopt|added|implemented|using|enabled)\b/.test(text)) return 'adoption'
+  if (/\b(done|complete|milestone|release|finished)\b/.test(text)) return 'milestone'
+  return 'discovery'
+}
+
+function inferSignificance(node: MemoryNode): TimelineEvent['significance'] {
+  if (node.type === 'decision' || node.entities.length >= 5 || node.content.length > 2500) return 'high'
+  if (node.entities.length >= 2 || node.content.length > 900) return 'medium'
+  return 'low'
 }

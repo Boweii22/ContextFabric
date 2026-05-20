@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, X, Clock, Tag, GitBranch, RefreshCw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
+import {
+  Search, X, Clock, Tag, GitBranch, RefreshCw, ZoomIn, ZoomOut, Maximize2,
+  FileText, Link2, Copy, Check, Database, Layers
+} from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAppStore } from '../../store'
 import { getTypeColor, formatDate, truncate } from '../../lib/utils'
@@ -24,9 +27,17 @@ interface GNode {
 }
 
 interface GEdge {
+  id?: string
   source: string
   target: string
   weight: number
+  type?: string
+  label?: string
+}
+
+interface RelatedMemory {
+  node: GNode
+  edge: GEdge
 }
 
 // ─── Force simulation (runs every frame) ─────────────────────────────────────
@@ -151,24 +162,32 @@ export default function MemoryGraphPage() {
 
   // Interaction
   const dragNode = useRef<GNode | null>(null)
+  const pointerMoved = useRef(false)
   const isPanning = useRef(false)
   const lastMouse = useRef({ x: 0, y: 0 })
   const hoveredNode = useRef<GNode | null>(null)
   const clusterRef = useRef<Set<string>>(new Set())
+  const selectedNodeIdRef = useRef<string | null>(null)
 
   // UI state
   const [loading, setLoading] = useState(true)
   const [selectedNode, setSelectedNode] = useState<MemoryNode | null>(null)
+  const [selectedRelations, setSelectedRelations] = useState<RelatedMemory[]>([])
   const [search, setSearch] = useState('')
   const [filterType, setFilterType] = useState<string | null>(null)
   const [counts, setCounts] = useState({ nodes: 0, edges: 0 })
   const { setSelectedNodeId } = useAppStore()
+
+  useEffect(() => {
+    selectedNodeIdRef.current = selectedNode?.id ?? null
+  }, [selectedNode])
 
   // ─── Load data ──────────────────────────────────────────────────────────────
 
   const loadGraph = useCallback(async () => {
     setLoading(true)
     setSelectedNode(null)
+    setSelectedRelations([])
     try {
       const gs = await api.memory.getGraph() as {
         nodes: Array<{ id: string; label: string; type: string; color: string; size: number; data: MemoryNode }>
@@ -204,7 +223,12 @@ export default function MemoryGraphPage() {
       })
 
       const edges: GEdge[] = gs.edges.slice(0, 800).map(e => ({
-        source: e.source, target: e.target, weight: Math.max(0.1, e.weight ?? 0.5),
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        weight: Math.max(0.1, e.weight ?? 0.5),
+        type: (e as { type?: string }).type,
+        label: (e as { label?: string }).label,
       }))
 
       sim.current.setData(nodes, edges)
@@ -217,6 +241,34 @@ export default function MemoryGraphPage() {
   }, [])
 
   useEffect(() => { loadGraph() }, [])
+
+  function selectGraphNode(hit: GNode | null, deselect = false) {
+    if (!hit?.data || deselect) {
+      setSelectedNode(null)
+      setSelectedRelations([])
+      setSelectedNodeId(null)
+      selectedNodeIdRef.current = null
+      clusterRef.current = new Set()
+      return
+    }
+
+    const nodeMap = new Map(sim.current.nodes.map(n => [n.id, n]))
+    const relations = sim.current.edges
+      .filter(e => e.source === hit.id || e.target === hit.id)
+      .map(edge => {
+        const otherId = edge.source === hit.id ? edge.target : edge.source
+        const node = nodeMap.get(otherId)
+        return node ? { node, edge } : null
+      })
+      .filter((item): item is RelatedMemory => item !== null)
+      .slice(0, 8)
+
+    setSelectedNode(hit.data)
+    setSelectedRelations(relations)
+    setSelectedNodeId(hit.id)
+    selectedNodeIdRef.current = hit.id
+    clusterRef.current = findCluster(hit.id, sim.current.edges)
+  }
 
   // ─── Render loop ─────────────────────────────────────────────────────────────
 
@@ -446,6 +498,7 @@ export default function MemoryGraphPage() {
     lastMouse.current = { x: cx, y: cy }
 
     const hit = nodeAt(cx, cy)
+    pointerMoved.current = false
     if (hit) {
       dragNode.current = hit
       hit.vx = 0; hit.vy = 0
@@ -459,6 +512,7 @@ export default function MemoryGraphPage() {
     const cx = e.clientX - rect.left, cy = e.clientY - rect.top
     const dx = cx - lastMouse.current.x, dy = cy - lastMouse.current.y
     lastMouse.current = { x: cx, y: cy }
+    if (Math.hypot(dx, dy) > 3) pointerMoved.current = true
 
     if (dragNode.current) {
       const nd = dragNode.current
@@ -477,25 +531,27 @@ export default function MemoryGraphPage() {
 
   const onMouseUp = useCallback((e: React.MouseEvent) => {
     if (dragNode.current) {
+      const hit = dragNode.current
       dragNode.current = null
+      if (!pointerMoved.current && hit?.data) {
+        const isDeselect = selectedNodeIdRef.current === hit.id
+        selectGraphNode(hit, isDeselect)
+      }
     } else if (isPanning.current) {
       isPanning.current = false
+      if (!pointerMoved.current) selectGraphNode(null)
     } else {
       const rect = canvasRef.current!.getBoundingClientRect()
       const cx = e.clientX - rect.left, cy = e.clientY - rect.top
       const hit = nodeAt(cx, cy)
       if (hit?.data) {
-        const isDeselect = selectedNode?.id === hit.id
-        setSelectedNode(isDeselect ? null : hit.data!)
-        setSelectedNodeId(isDeselect ? null : hit.id)
-        clusterRef.current = isDeselect
-          ? new Set()
-          : findCluster(hit.id, sim.current.edges)
+        const isDeselect = selectedNodeIdRef.current === hit.id
+        selectGraphNode(hit, isDeselect)
       } else {
-        setSelectedNode(null)
-        clusterRef.current = new Set()
+        selectGraphNode(null)
       }
     }
+    pointerMoved.current = false
   }, [])
 
   const onMouseLeave = useCallback(() => {
@@ -690,83 +746,234 @@ export default function MemoryGraphPage() {
           </div>
         )}
 
-        {/* Node detail panel */}
+        {/* Memory detail drawer */}
         <AnimatePresence>
           {selectedNode && (
-            <motion.div
-              initial={{ opacity: 0, x: 16, scale: 0.97 }}
-              animate={{ opacity: 1, x: 0, scale: 1 }}
-              exit={{ opacity: 0, x: 16, scale: 0.97 }}
-              transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-              className="absolute right-3 top-3 bottom-3 w-72 flex flex-col rounded-2xl overflow-hidden"
-              style={{
-                background: 'rgba(8,11,20,0.94)',
-                backdropFilter: 'blur(24px)',
-                border: '1px solid rgba(255,255,255,0.07)',
-                boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
+            <MemoryDetailDrawer
+              node={selectedNode}
+              relations={selectedRelations}
+              clusterSize={clusterRef.current.size}
+              onClose={() => selectGraphNode(null)}
+              onSelectRelation={(id) => {
+                const next = sim.current.nodes.find(n => n.id === id) || null
+                selectGraphNode(next)
               }}
-            >
-              <div className="flex items-center justify-between px-4 py-3.5 border-b border-white/[0.06]">
-                <div className="flex items-center gap-2">
-                  <motion.div className="w-3 h-3 rounded-full"
-                    style={{ backgroundColor: getTypeColor(selectedNode.type), boxShadow: `0 0 8px ${getTypeColor(selectedNode.type)}80` }}
-                    animate={{ scale: [1,1.25,1], opacity: [0.7,1,0.7] }}
-                    transition={{ duration: 2, repeat: Infinity }}
-                  />
-                  <span className="text-xs font-semibold text-white capitalize">{selectedNode.type}</span>
-                </div>
-                <button onClick={() => setSelectedNode(null)}
-                  className="w-6 h-6 rounded-lg hover:bg-white/[0.08] flex items-center justify-center text-slate-500 hover:text-white transition-all">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-none">
-                <h3 className="font-semibold text-white text-sm leading-snug">{selectedNode.title}</h3>
-                <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
-                  <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatDate(selectedNode.timestamp)}</span>
-                  <span className="text-slate-700">·</span>
-                  <span className="truncate max-w-[120px]">{selectedNode.sourceName}</span>
-                  {clusterRef.current.size > 1 && (
-                    <span className="px-1.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400 text-2xs">
-                      {clusterRef.current.size} in cluster
-                    </span>
-                  )}
-                </div>
-
-                {selectedNode.summary && (
-                  <div className="p-3 rounded-xl border"
-                    style={{ background: `${getTypeColor(selectedNode.type)}08`, borderColor: `${getTypeColor(selectedNode.type)}20` }}>
-                    <p className="text-xs text-slate-300 leading-relaxed">{selectedNode.summary}</p>
-                  </div>
-                )}
-
-                <div>
-                  <div className="text-2xs font-medium text-slate-600 uppercase tracking-wider mb-1.5">Content</div>
-                  <p className="text-xs text-slate-400 leading-relaxed whitespace-pre-wrap">{truncate(selectedNode.content, 500)}</p>
-                </div>
-
-                {selectedNode.entities.length > 0 && (
-                  <div>
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <Tag className="w-3 h-3 text-slate-600" />
-                      <span className="text-2xs font-medium text-slate-600 uppercase tracking-wider">Entities</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedNode.entities.map(e => (
-                        <span key={e} className="text-2xs px-2 py-0.5 rounded-full border"
-                          style={{ background: `${getTypeColor(selectedNode.type)}10`, borderColor: `${getTypeColor(selectedNode.type)}30`, color: getTypeColor(selectedNode.type) }}>
-                          {e}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </motion.div>
+            />
           )}
         </AnimatePresence>
       </div>
     </div>
   )
+}
+
+function MemoryDetailDrawer({
+  node,
+  relations,
+  clusterSize,
+  onClose,
+  onSelectRelation,
+}: {
+  node: MemoryNode
+  relations: RelatedMemory[]
+  clusterSize: number
+  onClose: () => void
+  onSelectRelation: (id: string) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const metadata = Object.entries(node.metadata || {})
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .slice(0, 8)
+  const path = typeof node.metadata?.path === 'string' ? node.metadata.path : ''
+  const chunkIndex = typeof node.metadata?.chunkIndex === 'number' ? node.metadata.chunkIndex + 1 : null
+
+  function copyContent() {
+    const text = `${node.title}\n\n${node.content}`
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    }).catch(() => {})
+  }
+
+  return (
+    <motion.aside
+      initial={{ opacity: 0, x: 24 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 24 }}
+      transition={{ type: 'spring', stiffness: 520, damping: 38 }}
+      className="absolute right-3 top-3 bottom-3 w-[380px] flex flex-col rounded-2xl overflow-hidden"
+      style={{
+        background: 'rgba(8,11,20,0.96)',
+        backdropFilter: 'blur(24px)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        boxShadow: '0 24px 70px rgba(0,0,0,0.72)',
+      }}
+    >
+      <div className="px-4 py-3.5 border-b border-white/[0.06]">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <motion.div
+              className="w-3 h-3 rounded-full shrink-0"
+              style={{
+                backgroundColor: getTypeColor(node.type),
+                boxShadow: `0 0 8px ${getTypeColor(node.type)}80`,
+              }}
+              animate={{ scale: [1, 1.25, 1], opacity: [0.75, 1, 0.75] }}
+              transition={{ duration: 2, repeat: Infinity }}
+            />
+            <span className="text-2xs font-semibold text-indigo-300 uppercase tracking-wider">Memory Detail</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={copyContent}
+              className="w-7 h-7 rounded-lg hover:bg-white/[0.08] flex items-center justify-center text-slate-500 hover:text-white transition-all"
+              title="Copy memory content"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              onClick={onClose}
+              className="w-7 h-7 rounded-lg hover:bg-white/[0.08] flex items-center justify-center text-slate-500 hover:text-white transition-all"
+              title="Close detail"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        <h2 className="font-semibold text-white text-base leading-snug mb-3">{node.title}</h2>
+        <div className="grid grid-cols-2 gap-2">
+          <DetailChip icon={<Clock className="w-3 h-3" />} label={formatDate(node.timestamp)} />
+          <DetailChip icon={<Database className="w-3 h-3" />} label={node.sourceName} />
+          <DetailChip icon={<FileText className="w-3 h-3" />} label={node.type} />
+          <DetailChip icon={<Layers className="w-3 h-3" />} label={`${clusterSize || 1} in cluster`} />
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-none">
+        {node.summary && (
+          <section className="p-3 rounded-xl border"
+            style={{ background: `${getTypeColor(node.type)}08`, borderColor: `${getTypeColor(node.type)}24` }}>
+            <div className="text-2xs font-medium text-slate-500 uppercase tracking-wider mb-1">Summary</div>
+            <p className="text-xs text-slate-300 leading-relaxed">{node.summary}</p>
+          </section>
+        )}
+
+        <section>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-2xs font-medium text-slate-500 uppercase tracking-wider">Full Memory</div>
+            <span className="text-2xs text-slate-700">{node.content.length.toLocaleString()} chars</span>
+          </div>
+          <div className="max-h-80 overflow-y-auto rounded-xl bg-cosmos-900/80 border border-white/[0.06] p-3 scrollbar-none">
+            <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap font-mono">
+              {node.content}
+            </p>
+          </div>
+        </section>
+
+        {(path || metadata.length > 0 || chunkIndex !== null) && (
+          <section>
+            <div className="text-2xs font-medium text-slate-500 uppercase tracking-wider mb-2">Source Metadata</div>
+            <div className="space-y-1.5">
+              {path && <MetaRow label="Path" value={path} />}
+              {chunkIndex !== null && <MetaRow label="Chunk" value={String(chunkIndex)} />}
+              {metadata
+                .filter(([key]) => key !== 'path' && key !== 'chunkIndex' && key !== 'title')
+                .map(([key, value]) => (
+                  <MetaRow key={key} label={key} value={formatMetaValue(value)} />
+                ))}
+            </div>
+          </section>
+        )}
+
+        {node.entities.length > 0 && (
+          <section>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Tag className="w-3 h-3 text-slate-600" />
+              <span className="text-2xs font-medium text-slate-500 uppercase tracking-wider">Entities</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {node.entities.map(e => (
+                <span
+                  key={e}
+                  className="text-2xs px-2 py-0.5 rounded-full border"
+                  style={{
+                    background: `${getTypeColor(node.type)}10`,
+                    borderColor: `${getTypeColor(node.type)}30`,
+                    color: getTypeColor(node.type),
+                  }}
+                >
+                  {e}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Link2 className="w-3 h-3 text-slate-600" />
+            <span className="text-2xs font-medium text-slate-500 uppercase tracking-wider">
+              Connected Memories
+            </span>
+            <span className="text-2xs text-slate-700">{relations.length}</span>
+          </div>
+          {relations.length === 0 ? (
+            <div className="rounded-xl border border-white/[0.05] bg-white/[0.02] p-3 text-xs text-slate-600">
+              No graph links for this memory yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {relations.map(({ node: related, edge }) => (
+                <button
+                  key={`${edge.source}-${edge.target}-${related.id}`}
+                  onClick={() => onSelectRelation(related.id)}
+                  className="w-full text-left rounded-xl border border-white/[0.06] bg-cosmos-900/60 hover:border-indigo-500/25 hover:bg-indigo-500/5 p-3 transition-all"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: related.color || getTypeColor(related.type) }}
+                    />
+                    <span className="text-xs font-medium text-slate-300 truncate">{related.data?.title || related.label}</span>
+                    <span className="ml-auto text-2xs text-slate-700">{Math.round((edge.weight || 0) * 100)}%</span>
+                  </div>
+                  <div className="text-2xs text-slate-600">
+                    {(edge.label || edge.type || 'related').replace('_', ' ')}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </motion.aside>
+  )
+}
+
+function DetailChip({ icon, label }: { icon: React.ReactNode; label: string }) {
+  return (
+    <div className="flex items-center gap-1.5 min-w-0 rounded-lg bg-white/[0.035] border border-white/[0.055] px-2 py-1.5">
+      <span className="text-slate-600 shrink-0">{icon}</span>
+      <span className="text-2xs text-slate-400 truncate capitalize">{label}</span>
+    </div>
+  )
+}
+
+function MetaRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[72px_1fr] gap-2 text-xs">
+      <div className="text-slate-600 capitalize truncate">{label.replace(/([A-Z])/g, ' $1')}</div>
+      <div className="text-slate-400 break-all">{value}</div>
+    </div>
+  )
+}
+
+function formatMetaValue(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
 }
