@@ -23,7 +23,6 @@ export class OllamaService {
   private enrichmentController: AbortController | null = null
   private constrainedModelReady = false
   private readonly constrainedModelName = 'cf-gemma4'
-  private readonly fallbackModel = 'qwen2.5:0.5b'
   private readonly runtimeContext = 512
   private geminiApiKey = ''
   private geminiModel = 'gemma-3-27b-it'
@@ -45,7 +44,7 @@ export class OllamaService {
 
   constructor(
     baseUrl = 'http://localhost:11434',
-    model = 'qwen2.5:0.5b',
+    model = 'cf-gemma4',
     embeddingModel = 'nomic-embed-text'
   ) {
     this.baseUrl = baseUrl
@@ -177,22 +176,6 @@ export class OllamaService {
     } catch {
       // Best effort only. Ollama may already have unloaded the model.
     }
-  }
-
-  private async switchToFallbackModel(reason: string): Promise<void> {
-    const previous = this.model
-    if (previous === this.fallbackModel) return
-
-    const models = await this.listModels()
-    const hasFallback = models.some(m => m.name === this.fallbackModel || m.name === `${this.fallbackModel}:latest`)
-    if (!hasFallback) {
-      throw new Error(`Fallback model ${this.fallbackModel} is not installed. Run: ollama pull ${this.fallbackModel}`)
-    }
-
-    console.warn(`[Ollama] ${reason}; switching from ${previous} to ${this.fallbackModel}`)
-    await this.unloadModel(previous)
-    this.model = this.fallbackModel
-    this.constrainedModelReady = false
   }
 
   private async generate(
@@ -459,45 +442,18 @@ export class OllamaService {
 
     // ── Generate (streaming) — falls back to Gemini API on OOM ─────────────────
     let answer = ''
-    let usedGemini = false
-    let usedFallbackModel = false
     try {
       answer = await this.generateStream(prompt, onChunk ?? (() => {}), 160)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Unknown'
-      const isOom = /memory layout|cannot be allocated|model failed to load/i.test(errMsg)
+      const isOom = /memory layout|cannot be allocated|model failed to load|requires more system memory/i.test(errMsg)
       if (isOom) {
-        try {
-          await this.switchToFallbackModel('Local model ran out of memory')
-          answer = await this.generateStream(prompt, onChunk ?? (() => {}), 160)
-          usedFallbackModel = true
-        } catch (fallbackErr) {
-          if (this.geminiApiKey) {
-            console.log(`[Ollama] Local fallback failed; using Google Gemini API (${this.geminiModel})...`)
-            try {
-              answer = await this.generateWithGemini(prompt, onChunk ?? (() => {}))
-              usedGemini = true
-            } catch (geminiErr) {
-              throw new Error(`Local fallback failed + Gemini failed: ${geminiErr instanceof Error ? geminiErr.message : 'unknown'}`)
-            }
-          } else {
-            throw new Error(`Ollama failed: ${fallbackErr instanceof Error ? fallbackErr.message : errMsg}`)
-          }
-        }
-      } else if (this.geminiApiKey && isOom) {
-        console.log(`[Ollama] OOM — falling back to Google Gemini API (${this.geminiModel})...`)
-        try {
-          answer = await this.generateWithGemini(prompt, onChunk ?? (() => {}))
-          usedGemini = true
-        } catch (geminiErr) {
-          throw new Error(`Ollama OOM + Gemini failed: ${geminiErr instanceof Error ? geminiErr.message : 'unknown'}`)
-        }
-      } else {
-        throw new Error(`Ollama failed: ${errMsg}`)
+        throw new Error(`Gemma 4 needs more free RAM to load. Close Chrome/VS Code/other apps, then retry. Ollama said: ${errMsg}`)
       }
+      throw new Error(`Ollama failed: ${errMsg}`)
     }
 
-    // ── Fallbacks ─────────────────────────────────────────────────────────────
+    // Fallbacks ─────────────────────────────────────────────────────────────
     if (!answer || answer.length < 8) {
       const isStackQuestion = /stack|technolog|framework|language|library|built with/i.test(userQuery)
       if (isStackQuestion && importLines.length > 0) {
@@ -531,11 +487,7 @@ export class OllamaService {
       detectedConflicts.push(m[1].trim())
     }
 
-    const reasoning = usedGemini
-      ? `Answered via Google Gemini API (${this.geminiModel}) — local model unavailable due to RAM.`
-      : usedFallbackModel
-      ? `Answered via local fallback model (${this.fallbackModel}) because the selected model ran out of RAM.`
-      : chunks.length > 0
+    const reasoning = chunks.length > 0
       ? `Reasoned across ${chunks.length} source(s) from ${[...new Set(chunks.map(c => c.source.split(' — ')[0]))].join(', ')}.${decisionChain.length > 0 ? ` Referenced ${decisionChain.length} past decision(s).` : ''}`
       : 'No matching sources found in your knowledge base.'
 

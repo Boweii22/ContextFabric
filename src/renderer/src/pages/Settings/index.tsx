@@ -110,7 +110,7 @@ export default function SettingsPage(): React.ReactElement {
               />
             </SettingField>
 
-            <SettingField label="AI Model" hint="qwen2.5:0.5b is the low-memory default; larger models may need more RAM">
+            <SettingField label="AI Model" hint="Strict Gemma 4 mode uses cf-gemma4; close heavy apps before querying on 16 GB RAM">
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -159,7 +159,7 @@ export default function SettingsPage(): React.ReactElement {
               <div className="p-4 rounded-xl bg-indigo-500/5 border border-indigo-500/15 text-xs font-mono">
                 <p className="text-indigo-400 font-sans font-semibold mb-2">Recommended setup:</p>
                 <p className="text-slate-400 font-sans mb-2">1. Install Ollama from <span className="text-indigo-400">ollama.ai</span></p>
-                <p className="text-cyan-400">ollama pull qwen2.5:0.5b</p>
+                <p className="text-cyan-400">ollama pull gemma4:e4b</p>
                 <p className="text-cyan-400">ollama pull nomic-embed-text</p>
               </div>
             )}
@@ -169,7 +169,7 @@ export default function SettingsPage(): React.ReactElement {
           <SettingsSection title="Cloud AI Fallback (Google Gemini)" icon={<Zap className="w-4 h-4 text-emerald-400" />}>
             <div className="p-3.5 rounded-xl bg-emerald-500/5 border border-emerald-500/15 text-xs mb-3">
               <p className="text-emerald-400 font-semibold mb-1">Fix for RAM-limited machines</p>
-              <p className="text-slate-400">When local Ollama runs out of memory (gemma4:e4b needs ~12 GB), queries automatically fall back to Google&apos;s Gemini API. Get a free key at <span className="text-emerald-400">aistudio.google.com</span></p>
+              <p className="text-slate-400">Strict local Gemma 4 mode does not use this automatically. Keep this blank unless you intentionally want a cloud fallback later.</p>
             </div>
             <SettingField label="Google AI Studio API Key" hint="Paste your key — stored locally, never shared">
               <input

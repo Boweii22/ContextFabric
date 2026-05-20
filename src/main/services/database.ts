@@ -334,7 +334,7 @@ export class DatabaseService {
   private initializeDefaultSettings(): void {
     const defaults: AppSettings = {
       ollamaUrl: 'http://localhost:11434',
-      ollamaModel: 'qwen2.5:0.5b',
+      ollamaModel: 'cf-gemma4',
       embeddingModel: 'nomic-embed-text',
       maxContextLength: 8192,
       autoSync: false,
@@ -354,11 +354,12 @@ export class DatabaseService {
       upsert.run(key, JSON.stringify(value))
     }
 
-    // Migrate memory-heavy defaults to a small model that works on low-RAM machines.
+    // Migrate old/heavy model names to the constrained Gemma 4 profile.
     this.db.prepare(
-      'UPDATE app_settings SET value = ? WHERE key = ? AND value IN (?, ?, ?, ?, ?, ?)'
+      'UPDATE app_settings SET value = ? WHERE key = ? AND value IN (?, ?, ?, ?, ?, ?, ?)'
     ).run(
-      JSON.stringify('qwen2.5:0.5b'), 'ollamaModel',
+      JSON.stringify('cf-gemma4'), 'ollamaModel',
+      JSON.stringify('qwen2.5:0.5b'),
       JSON.stringify('cf-gemma4'),
       JSON.stringify('cf-gemma4:latest'),
       JSON.stringify('gemma4:e4b'),
