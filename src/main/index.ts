@@ -5,12 +5,14 @@ import { registerIpcHandlers } from './ipc'
 import { DatabaseService } from './services/database'
 import { OllamaService } from './services/ollama'
 import { IngestionService } from './services/ingestion'
+import { SyncService } from './services/sync'
 import { startApiServer } from './api/server'
 
 let mainWindow: BrowserWindow | null = null
 let db: DatabaseService
 let ollama: OllamaService
 let ingestion: IngestionService
+let sync: SyncService
 
 function createWindow(): void {
   nativeTheme.themeSource = 'dark'
@@ -77,7 +79,10 @@ async function initialize(): Promise<void> {
   // gemma4:e4b can run on 16 GB machines without KV-cache OOM errors.
   await ollama.ensureConstrainedModel()
 
-  ingestion = registerIpcHandlers(db, ollama, () => mainWindow)
+  sync = new SyncService(db)
+  sync.start()
+
+  ingestion = registerIpcHandlers(db, ollama, () => mainWindow, sync)
   startApiServer(db, ollama, 47821)
 }
 
@@ -104,6 +109,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   ingestion?.stopAllWatchers()
+  sync?.stop()
 })
 
 export { mainWindow }

@@ -47,6 +47,11 @@ const api = {
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
   },
 
+  sync: {
+    status: () => ipcRenderer.invoke('sync:status'),
+    run: (peerUrl?: string, peerKey?: string) => ipcRenderer.invoke('sync:run', peerUrl, peerKey),
+  },
+
   // Ollama
   ollama: {
     status: () => ipcRenderer.invoke('ollama:status'),

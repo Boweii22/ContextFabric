@@ -2,6 +2,8 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
 import { mkdirSync, existsSync } from 'fs'
+import { extensionPath } from '@vlcn.io/crsqlite'
+import { SecretStore } from './secrets'
 import {
   randomBytes, createCipheriv, createDecipheriv, createHash,
   generateKeyPairSync, createPrivateKey, createPublicKey,
@@ -11,7 +13,7 @@ import { v4 as uuidv4 } from 'uuid'
 import type {
   MemoryNode, MemoryEdge, DataSource, Entity,
   TimelineEvent, AppSettings, Stats, AIQueryResult, ContextToken, ContextAccessLog,
-  AppAccessGrant, ContextPermissionRequest
+  AppAccessGrant, ContextPermissionRequest, CRSQLiteChange, CRSQLiteStatus, SyncPeer
 } from '../../shared/types'
 
 // ─── CR-SQLite Readiness ─────────────────────────────────────────────────────
@@ -32,31 +34,44 @@ import type {
 //   The sync_changes table maps directly to crsql_changes format
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 4
+const SCHEMA_VERSION = 6
+const CRR_TABLES = ['memory_nodes', 'memory_edges', 'data_sources', 'entities', 'timeline_events', 'query_history']
 
 export class DatabaseService {
   private db!: Database.Database
   private dbPath: string
   private siteId!: string
   private _encKey: Buffer | null = null
+  private secrets: SecretStore
+  private crsqliteEnabled = false
+  private crsqliteError: string | undefined
 
   private encKey(): Buffer | null {
     if (this._encKey) return this._encKey
-    const settings = this.getAllSettings()
-    if (!settings.encryption) return null
-    if (!settings.encryptionKey) {
-      const key = randomBytes(32).toString('hex')
-      this.db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run('encryptionKey', JSON.stringify(key))
-      this._encKey = Buffer.from(key, 'hex')
-    } else {
-      this._encKey = Buffer.from(settings.encryptionKey as string, 'hex')
-    }
+    let key = this.getGraphEncryptionKey()
+    this._encKey = Buffer.from(key, 'hex')
     return this._encKey
+  }
+
+  getGraphEncryptionKey(): string {
+    let key = this.secrets.get('graph_encryption_key') || this.getSetting<string>('encryptionKey')
+    if (!key) {
+      key = randomBytes(32).toString('hex')
+      this.secrets.set('graph_encryption_key', key)
+    } else if (!this.secrets.get('graph_encryption_key')) {
+      this.secrets.set('graph_encryption_key', key)
+      this.deleteSetting('encryptionKey')
+    }
+    return key
   }
 
   private encrypt(text: string): string {
     const key = this.encKey()
     if (!key) return text
+    return this.encryptWithKey(text, key)
+  }
+
+  private encryptWithKey(text: string, key: Buffer): string {
     const iv = randomBytes(12)
     const cipher = createCipheriv('aes-256-gcm', key, iv)
     const enc = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()])
@@ -65,6 +80,7 @@ export class DatabaseService {
   }
 
   private decrypt(text: string): string {
+    if (!text) return text
     if (!text.startsWith('enc:')) return text
     try {
       const key = this.encKey()
@@ -73,13 +89,44 @@ export class DatabaseService {
       const iv = Buffer.from(parts[1], 'hex')
       const tag = Buffer.from(parts[2], 'hex')
       const data = Buffer.from(parts[3], 'hex')
-      const decipher = createDecipheriv('aes-256-gcm', key, iv)
-      decipher.setAuthTag(tag)
-      return decipher.update(data).toString('utf8') + decipher.final('utf8')
+      return this.decryptWithKeyParts(iv, tag, data, key)
     } catch { return text }
   }
 
+  private decryptWithKey(text: string, key: Buffer): string {
+    if (!text || !text.startsWith('enc:')) return text
+    try {
+      const parts = text.split(':')
+      return this.decryptWithKeyParts(Buffer.from(parts[1], 'hex'), Buffer.from(parts[2], 'hex'), Buffer.from(parts[3], 'hex'), key)
+    } catch { return text }
+  }
+
+  private decryptWithKeyParts(iv: Buffer, tag: Buffer, data: Buffer, key: Buffer): string {
+    const decipher = createDecipheriv('aes-256-gcm', key, iv)
+    decipher.setAuthTag(tag)
+    return decipher.update(data).toString('utf8') + decipher.final('utf8')
+  }
+
+  private encryptMaybe(text: string | null | undefined): string | null {
+    if (text === null || text === undefined) return null
+    return text.startsWith('enc:') ? text : this.encrypt(text)
+  }
+
+  private jsonEncrypt(value: unknown): string {
+    return this.encrypt(JSON.stringify(value))
+  }
+
+  private jsonDecrypt<T>(value: unknown, fallback: T): T {
+    if (typeof value !== 'string' || !value) return fallback
+    try {
+      return JSON.parse(this.decrypt(value)) as T
+    } catch {
+      return fallback
+    }
+  }
+
   constructor() {
+    this.secrets = new SecretStore()
     const userDataPath = app.getPath('userData')
     const dbDir = join(userDataPath, 'data')
     if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true })
@@ -94,6 +141,8 @@ export class DatabaseService {
     this.db.pragma('foreign_keys = ON')
     this.runMigrations()
     this.siteId = this.getOrCreateSiteId()
+    this.initializeCRSQLite()
+    this.migrateSecureSecretsAndEncryptedGraph()
     this.resetStuckSources()
     this.resetSessionGrants()
   }
@@ -218,14 +267,6 @@ export class DatabaseService {
       CREATE INDEX IF NOT EXISTS idx_entities_name   ON entities(name);
       CREATE INDEX IF NOT EXISTS idx_timeline_ts     ON timeline_events(timestamp);
 
-      CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
-        id UNINDEXED,
-        title,
-        content,
-        tags,
-        entities,
-        tokenize='porter unicode61'
-      );
     `)
 
     const currentVersion = this.getSchemaVersion()
@@ -357,6 +398,27 @@ export class DatabaseService {
       this.setSchemaVersion(4)
     }
 
+    if (currentVersion < 5) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_peers (
+          peer_site_id             TEXT PRIMARY KEY,
+          peer_url                 TEXT,
+          last_seen                INTEGER NOT NULL DEFAULT 0,
+          last_received_db_version INTEGER NOT NULL DEFAULT -1,
+          last_sent_db_version     INTEGER NOT NULL DEFAULT -1
+        );
+      `)
+
+      this.setSchemaVersion(5)
+    }
+
+    if (currentVersion < 6) {
+      this.db.exec(`
+        DROP TABLE IF EXISTS nodes_fts;
+      `)
+      this.setSchemaVersion(6)
+    }
+
     this.initializeDefaultSettings()
   }
 
@@ -414,6 +476,420 @@ export class DatabaseService {
 
   // ─── Default settings ───────────────────────────────────────────────────────
 
+  private initializeCRSQLite(): void {
+    try {
+      this.db.loadExtension(extensionPath)
+
+      for (const table of CRR_TABLES) {
+        try {
+          this.db.prepare('SELECT crsql_as_crr(?)').run(table)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (!message.toLowerCase().includes('already')) throw error
+        }
+      }
+
+      this.crsqliteEnabled = true
+      this.crsqliteError = undefined
+    } catch (error) {
+      this.crsqliteEnabled = false
+      this.crsqliteError = error instanceof Error ? error.message : String(error)
+      console.warn('[Sync] CR-SQLite unavailable:', this.crsqliteError)
+    }
+  }
+
+  private getCRSQLSiteId(): string {
+    if (!this.crsqliteEnabled) return this.siteId
+    try {
+      const row = this.db.prepare('SELECT hex(crsql_site_id()) as site_id').get() as { site_id: string }
+      return row.site_id
+    } catch {
+      return this.siteId
+    }
+  }
+
+  getCRSQLDbVersion(): number {
+    if (!this.crsqliteEnabled) return -1
+    try {
+      const row = this.db.prepare('SELECT crsql_db_version() as version').get() as { version: number | bigint }
+      return Number(row.version)
+    } catch {
+      return -1
+    }
+  }
+
+  getOrCreateSyncKey(): string {
+    return this.getGraphEncryptionKey()
+  }
+
+  private encodeCRSQLValue(value: unknown): { value: unknown; encoding: 'json' | 'base64' } {
+    if (Buffer.isBuffer(value)) return { value: value.toString('base64'), encoding: 'base64' }
+    if (typeof value === 'bigint') return { value: value.toString(), encoding: 'json' }
+    return { value, encoding: 'json' }
+  }
+
+  private decodeCRSQLValue(value: unknown, encoding: 'json' | 'base64'): unknown {
+    return encoding === 'base64' && typeof value === 'string' ? Buffer.from(value, 'base64') : value
+  }
+
+  getCRSQLChanges(sinceVersion = -1): CRSQLiteChange[] {
+    if (!this.crsqliteEnabled) return []
+    const rows = this.db.prepare(`
+      SELECT "table" as table_name,
+             hex("pk") as pk,
+             "cid" as cid,
+             "val" as val,
+             "col_version" as col_version,
+             "db_version" as db_version,
+             hex("site_id") as site_id
+      FROM crsql_changes
+      WHERE db_version > ?
+      ORDER BY db_version ASC
+    `).all(sinceVersion) as Array<Record<string, unknown>>
+
+    return rows.map(row => {
+      const encoded = this.encodeCRSQLValue(row['val'])
+      return {
+        table: row['table_name'] as string,
+        pk: row['pk'] as string,
+        cid: row['cid'] as string,
+        val: encoded.value,
+        valEncoding: encoded.encoding,
+        colVersion: Number(row['col_version']),
+        dbVersion: Number(row['db_version']),
+        siteId: row['site_id'] as string,
+      }
+    })
+  }
+
+  applyCRSQLChanges(changes: CRSQLiteChange[], peerSiteId: string, peerUrl?: string): { applied: number; maxVersion: number } {
+    if (!this.crsqliteEnabled || changes.length === 0) {
+      return { applied: 0, maxVersion: this.getPeerReceivedVersion(peerSiteId) }
+    }
+
+    let maxVersion = this.getPeerReceivedVersion(peerSiteId)
+    const stmt = this.db.prepare(`
+      INSERT INTO crsql_changes ("table", "pk", "cid", "val", "col_version", "db_version", "site_id")
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    const tx = this.db.transaction(() => {
+      for (const change of changes) {
+        stmt.run(
+          change.table,
+          Buffer.from(change.pk, 'hex'),
+          change.cid,
+          this.decodeCRSQLValue(change.val, change.valEncoding),
+          change.colVersion,
+          change.dbVersion,
+          Buffer.from(change.siteId, 'hex')
+        )
+        if (change.dbVersion > maxVersion) maxVersion = change.dbVersion
+      }
+    })
+    tx()
+
+    this.rebuildSearchIndex()
+    this.recordPeerReceived(peerSiteId, peerUrl, maxVersion)
+    return { applied: changes.length, maxVersion }
+  }
+
+  rebuildSearchIndex(): void {
+    // FTS would persist plaintext terms on disk. Keyword search now scans
+    // decrypted graph rows in memory to keep the database encrypted at rest.
+  }
+
+  getPeerReceivedVersion(peerSiteId: string): number {
+    const row = this.db.prepare(
+      'SELECT last_received_db_version FROM sync_peers WHERE peer_site_id = ?'
+    ).get(peerSiteId) as { last_received_db_version: number } | undefined
+    return row?.last_received_db_version ?? -1
+  }
+
+  getPeerSentVersion(peerSiteId: string): number {
+    const row = this.db.prepare(
+      'SELECT last_sent_db_version FROM sync_peers WHERE peer_site_id = ?'
+    ).get(peerSiteId) as { last_sent_db_version: number } | undefined
+    return row?.last_sent_db_version ?? -1
+  }
+
+  recordPeerReceived(peerSiteId: string, peerUrl: string | undefined, dbVersion: number): void {
+    this.db.prepare(`
+      INSERT INTO sync_peers (peer_site_id, peer_url, last_seen, last_received_db_version, last_sent_db_version)
+      VALUES (?, ?, ?, ?, COALESCE((SELECT last_sent_db_version FROM sync_peers WHERE peer_site_id = ?), -1))
+      ON CONFLICT(peer_site_id) DO UPDATE SET
+        peer_url = COALESCE(excluded.peer_url, sync_peers.peer_url),
+        last_seen = excluded.last_seen,
+        last_received_db_version = MAX(sync_peers.last_received_db_version, excluded.last_received_db_version)
+    `).run(peerSiteId, peerUrl || null, Date.now(), dbVersion, peerSiteId)
+  }
+
+  recordPeerSent(peerSiteId: string, peerUrl: string | undefined, dbVersion: number): void {
+    this.db.prepare(`
+      INSERT INTO sync_peers (peer_site_id, peer_url, last_seen, last_received_db_version, last_sent_db_version)
+      VALUES (?, ?, ?, COALESCE((SELECT last_received_db_version FROM sync_peers WHERE peer_site_id = ?), -1), ?)
+      ON CONFLICT(peer_site_id) DO UPDATE SET
+        peer_url = COALESCE(excluded.peer_url, sync_peers.peer_url),
+        last_seen = excluded.last_seen,
+        last_sent_db_version = MAX(sync_peers.last_sent_db_version, excluded.last_sent_db_version)
+    `).run(peerSiteId, peerUrl || null, Date.now(), peerSiteId, dbVersion)
+  }
+
+  getSyncPeers(): SyncPeer[] {
+    const rows = this.db.prepare('SELECT * FROM sync_peers ORDER BY last_seen DESC').all() as Array<Record<string, unknown>>
+    return rows.map(row => ({
+      peerSiteId: row['peer_site_id'] as string,
+      peerUrl: row['peer_url'] as string | undefined,
+      lastSeen: row['last_seen'] as number,
+      lastReceivedDbVersion: row['last_received_db_version'] as number,
+      lastSentDbVersion: row['last_sent_db_version'] as number,
+    }))
+  }
+
+  getCRSQLiteStatus(lanPort = 47822, lanUrls: string[] = []): CRSQLiteStatus {
+    return {
+      enabled: this.crsqliteEnabled,
+      siteId: this.getCRSQLSiteId(),
+      dbVersion: this.getCRSQLDbVersion(),
+      syncKey: this.getOrCreateSyncKey(),
+      lanPort,
+      lanUrls,
+      lastError: this.crsqliteError,
+      peers: this.getSyncPeers(),
+    }
+  }
+
+  private migrateSecureSecretsAndEncryptedGraph(): void {
+    const legacyKey = this.getSetting<string>('encryptionKey')
+    if (legacyKey && !this.secrets.get('graph_encryption_key')) {
+      this.secrets.set('graph_encryption_key', legacyKey)
+    }
+
+    const legacySigningKeys = this.getSetting<{ privateKeyPem: string; publicKeyPem: string }>('context_signing_key')
+    if (legacySigningKeys?.privateKeyPem && !this.secrets.get('context_signing_private_key')) {
+      this.secrets.set('context_signing_private_key', legacySigningKeys.privateKeyPem)
+      this.setSetting('context_signing_public_key', legacySigningKeys.publicKeyPem)
+    }
+
+    const legacyPeerKey = this.getSetting<string>('syncPeerKey')
+    if (legacyPeerKey && !this.secrets.get('sync_peer_key')) {
+      this.secrets.set('sync_peer_key', legacyPeerKey)
+    }
+
+    this.setSetting('encryption', true)
+    this.deleteSetting('encryptionKey')
+    this.deleteSetting('context_signing_key')
+    this.deleteSetting('syncKey')
+    this.deleteSetting('syncPeerKey')
+
+    const tx = this.db.transaction(() => {
+      const nodeRows = this.db.prepare('SELECT * FROM memory_nodes').all() as Array<Record<string, unknown>>
+      const updateNode = this.db.prepare(`
+        UPDATE memory_nodes
+        SET title = ?, content = ?, source_name = ?, tags = ?, entities = ?, summary = ?, metadata = ?
+        WHERE id = ?
+      `)
+      for (const row of nodeRows) {
+        updateNode.run(
+          this.encryptMaybe(row['title'] as string),
+          this.encryptMaybe(row['content'] as string),
+          this.encryptMaybe(row['source_name'] as string),
+          this.encryptMaybe(row['tags'] as string),
+          this.encryptMaybe(row['entities'] as string),
+          this.encryptMaybe(row['summary'] as string | null),
+          this.encryptMaybe(row['metadata'] as string),
+          row['id']
+        )
+      }
+
+      const edgeRows = this.db.prepare('SELECT * FROM memory_edges').all() as Array<Record<string, unknown>>
+      const updateEdge = this.db.prepare('UPDATE memory_edges SET label = ?, metadata = ? WHERE id = ?')
+      for (const row of edgeRows) {
+        updateEdge.run(
+          this.encryptMaybe(row['label'] as string | null),
+          this.encryptMaybe(row['metadata'] as string),
+          row['id']
+        )
+      }
+
+      const sourceRows = this.db.prepare('SELECT * FROM data_sources').all() as Array<Record<string, unknown>>
+      const updateSource = this.db.prepare('UPDATE data_sources SET name = ?, path = ?, metadata = ? WHERE id = ?')
+      for (const row of sourceRows) {
+        updateSource.run(
+          this.encryptMaybe(row['name'] as string),
+          this.encryptMaybe(row['path'] as string),
+          this.encryptMaybe(row['metadata'] as string),
+          row['id']
+        )
+      }
+
+      const entityRows = this.db.prepare('SELECT * FROM entities').all() as Array<Record<string, unknown>>
+      const updateEntity = this.db.prepare('UPDATE entities SET name = ?, node_ids = ?, summary = ? WHERE id = ?')
+      for (const row of entityRows) {
+        updateEntity.run(
+          this.encryptMaybe(row['name'] as string),
+          this.encryptMaybe(row['node_ids'] as string),
+          this.encryptMaybe(row['summary'] as string | null),
+          row['id']
+        )
+      }
+
+      const eventRows = this.db.prepare('SELECT * FROM timeline_events').all() as Array<Record<string, unknown>>
+      const updateEvent = this.db.prepare(`
+        UPDATE timeline_events
+        SET title = ?, description = ?, source_name = ?, related_entities = ?
+        WHERE id = ?
+      `)
+      for (const row of eventRows) {
+        updateEvent.run(
+          this.encryptMaybe(row['title'] as string),
+          this.encryptMaybe(row['description'] as string),
+          this.encryptMaybe(row['source_name'] as string),
+          this.encryptMaybe(row['related_entities'] as string),
+          row['id']
+        )
+      }
+
+      const historyRows = this.db.prepare('SELECT * FROM query_history').all() as Array<Record<string, unknown>>
+      const updateHistory = this.db.prepare(`
+        UPDATE query_history
+        SET query = ?, answer = ?, sources_json = ?, entities_json = ?
+        WHERE id = ?
+      `)
+      for (const row of historyRows) {
+        updateHistory.run(
+          this.encryptMaybe(row['query'] as string),
+          this.encryptMaybe(row['answer'] as string),
+          this.encryptMaybe(row['sources_json'] as string),
+          this.encryptMaybe(row['entities_json'] as string),
+          row['id']
+        )
+      }
+
+      const tokenRows = this.db.prepare('SELECT * FROM context_tokens').all() as Array<Record<string, unknown>>
+      const updateToken = this.db.prepare(`
+        UPDATE context_tokens
+        SET context = ?, summary = ?, query = ?
+        WHERE token_hash = ?
+      `)
+      for (const row of tokenRows) {
+        updateToken.run(
+          this.encryptMaybe(row['context'] as string),
+          this.encryptMaybe(row['summary'] as string),
+          this.encryptMaybe(row['query'] as string | null),
+          row['token_hash']
+        )
+      }
+
+      const accessRows = this.db.prepare('SELECT * FROM context_access_log').all() as Array<Record<string, unknown>>
+      const updateAccess = this.db.prepare(`
+        UPDATE context_access_log
+        SET source_ids = ?, query = ?, details = ?
+        WHERE id = ?
+      `)
+      for (const row of accessRows) {
+        updateAccess.run(
+          this.encryptMaybe(row['source_ids'] as string),
+          this.encryptMaybe(row['query'] as string | null),
+          this.encryptMaybe(row['details'] as string | null),
+          row['id']
+        )
+      }
+
+      const embeddingRows = this.db.prepare('SELECT node_id, embedding FROM memory_embeddings').all() as Array<{ node_id: string; embedding: Buffer }>
+      const updateEmbedding = this.db.prepare('UPDATE memory_embeddings SET embedding = ? WHERE node_id = ?')
+      for (const row of embeddingRows) {
+        const text = row.embedding.toString('utf8')
+        if (text.startsWith('enc:')) continue
+        const vector = Array.from(new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / Float32Array.BYTES_PER_ELEMENT))
+        updateEmbedding.run(Buffer.from(this.encrypt(JSON.stringify(vector)), 'utf8'), row.node_id)
+      }
+    })
+    tx()
+
+    try { this.db.prepare('DROP TABLE IF EXISTS nodes_fts').run() } catch {}
+  }
+
+  rotateGraphEncryptionKey(newKeyHex: string): void {
+    if (!/^[a-f0-9]{64}$/i.test(newKeyHex)) throw new Error('Invalid graph encryption key')
+    const oldKey = Buffer.from(this.getGraphEncryptionKey(), 'hex')
+    const newKey = Buffer.from(newKeyHex, 'hex')
+    if (oldKey.equals(newKey)) return
+
+    const reencrypt = (value: unknown): string | null => {
+      if (value === null || value === undefined) return null
+      const plain = this.decryptWithKey(String(value), oldKey)
+      return this.encryptWithKey(plain, newKey)
+    }
+
+    const tx = this.db.transaction(() => {
+      for (const row of this.db.prepare('SELECT * FROM memory_nodes').all() as Array<Record<string, unknown>>) {
+        this.db.prepare(`
+          UPDATE memory_nodes
+          SET title = ?, content = ?, source_name = ?, tags = ?, entities = ?, summary = ?, metadata = ?
+          WHERE id = ?
+        `).run(
+          reencrypt(row['title']),
+          reencrypt(row['content']),
+          reencrypt(row['source_name']),
+          reencrypt(row['tags']),
+          reencrypt(row['entities']),
+          reencrypt(row['summary']),
+          reencrypt(row['metadata']),
+          row['id']
+        )
+      }
+
+      for (const row of this.db.prepare('SELECT * FROM memory_edges').all() as Array<Record<string, unknown>>) {
+        this.db.prepare('UPDATE memory_edges SET label = ?, metadata = ? WHERE id = ?')
+          .run(reencrypt(row['label']), reencrypt(row['metadata']), row['id'])
+      }
+
+      for (const row of this.db.prepare('SELECT * FROM data_sources').all() as Array<Record<string, unknown>>) {
+        this.db.prepare('UPDATE data_sources SET name = ?, path = ?, metadata = ? WHERE id = ?')
+          .run(reencrypt(row['name']), reencrypt(row['path']), reencrypt(row['metadata']), row['id'])
+      }
+
+      for (const row of this.db.prepare('SELECT * FROM entities').all() as Array<Record<string, unknown>>) {
+        this.db.prepare('UPDATE entities SET name = ?, node_ids = ?, summary = ? WHERE id = ?')
+          .run(reencrypt(row['name']), reencrypt(row['node_ids']), reencrypt(row['summary']), row['id'])
+      }
+
+      for (const row of this.db.prepare('SELECT * FROM timeline_events').all() as Array<Record<string, unknown>>) {
+        this.db.prepare('UPDATE timeline_events SET title = ?, description = ?, source_name = ?, related_entities = ? WHERE id = ?')
+          .run(reencrypt(row['title']), reencrypt(row['description']), reencrypt(row['source_name']), reencrypt(row['related_entities']), row['id'])
+      }
+
+      for (const row of this.db.prepare('SELECT * FROM query_history').all() as Array<Record<string, unknown>>) {
+        this.db.prepare('UPDATE query_history SET query = ?, answer = ?, sources_json = ?, entities_json = ? WHERE id = ?')
+          .run(reencrypt(row['query']), reencrypt(row['answer']), reencrypt(row['sources_json']), reencrypt(row['entities_json']), row['id'])
+      }
+
+      for (const row of this.db.prepare('SELECT * FROM context_tokens').all() as Array<Record<string, unknown>>) {
+        this.db.prepare('UPDATE context_tokens SET context = ?, summary = ?, query = ? WHERE token_hash = ?')
+          .run(reencrypt(row['context']), reencrypt(row['summary']), reencrypt(row['query']), row['token_hash'])
+      }
+
+      for (const row of this.db.prepare('SELECT * FROM context_access_log').all() as Array<Record<string, unknown>>) {
+        this.db.prepare('UPDATE context_access_log SET source_ids = ?, query = ?, details = ? WHERE id = ?')
+          .run(reencrypt(row['source_ids']), reencrypt(row['query']), reencrypt(row['details']), row['id'])
+      }
+
+      for (const row of this.db.prepare('SELECT node_id, embedding FROM memory_embeddings').all() as Array<{ node_id: string; embedding: Buffer }>) {
+        const text = row.embedding.toString('utf8')
+        const plain = text.startsWith('enc:')
+          ? this.decryptWithKey(text, oldKey)
+          : JSON.stringify(Array.from(new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / Float32Array.BYTES_PER_ELEMENT)))
+        this.db.prepare('UPDATE memory_embeddings SET embedding = ? WHERE node_id = ?')
+          .run(Buffer.from(this.encryptWithKey(plain, newKey), 'utf8'), row.node_id)
+      }
+    })
+    tx()
+
+    this.secrets.set('graph_encryption_key', newKeyHex)
+    this._encKey = newKey
+  }
+
   private initializeDefaultSettings(): void {
     const defaults: AppSettings = {
       ollamaUrl: 'http://localhost:11434',
@@ -426,8 +902,9 @@ export class DatabaseService {
       privacyMode: false,
       telemetry: false,
       contextPermissions: {},
-      encryption: false,
+      encryption: true,
       allowedApps: { vscode: true, claude: true, external: false },
+      syncLanEnabled: true,
     }
 
     const upsert = this.db.prepare(
@@ -466,19 +943,11 @@ export class DatabaseService {
          timestamp, tags, entities, summary, metadata, site_id, version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      node.id, node.title, this.encrypt(node.content), node.type,
-      node.sourceId, node.sourceName, node.sourceType,
-      node.timestamp, JSON.stringify(node.tags), JSON.stringify(node.entities),
-      node.summary || null, JSON.stringify(node.metadata),
+      node.id, this.encrypt(node.title), this.encrypt(node.content), node.type,
+      node.sourceId, this.encrypt(node.sourceName), node.sourceType,
+      node.timestamp, this.jsonEncrypt(node.tags), this.jsonEncrypt(node.entities),
+      node.summary ? this.encrypt(node.summary) : null, this.jsonEncrypt(node.metadata),
       this.siteId, version
-    )
-
-    this.db.prepare(`
-      INSERT OR REPLACE INTO nodes_fts (id, title, content, tags, entities)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      node.id, node.title, node.content.substring(0, 10000),
-      node.tags.join(' '), node.entities.join(' ')
     )
 
     this.logChange('memory_nodes', node.id, existing ? 'update' : 'insert', version)
@@ -530,42 +999,39 @@ export class DatabaseService {
   keywordSearch(query: string, limit = 20): Array<{ node: MemoryNode; score: number }> {
     const sanitized = query.replace(/[^a-zA-Z0-9 ]/g, ' ').trim()
     if (!sanitized) return []
-    const rows = this.db.prepare(`
-      SELECT n.*, bm25(nodes_fts) as score
-      FROM nodes_fts f
-      JOIN memory_nodes n ON n.id = f.id
-      WHERE nodes_fts MATCH ? AND n.deleted_at IS NULL
-      ORDER BY score
-      LIMIT ?
-    `).all(sanitized + '*', limit) as Array<Record<string, unknown>>
-
-    return rows.map(r => ({
-      node: this.rowToNode(r),
-      score: Math.abs(r['score'] as number),
-    }))
+    const words = sanitized.toLowerCase().split(/\s+/).filter(w => w.length > 1)
+    return this.getNodes(1000)
+      .map(node => {
+        const text = `${node.title} ${node.content} ${node.tags.join(' ')} ${node.entities.join(' ')}`.toLowerCase()
+        const score = words.reduce((sum, word) => sum + (text.includes(word) ? 1 : 0), 0)
+        return { node, score }
+      })
+      .filter(result => result.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
   }
 
   private rowToNode(row: Record<string, unknown>): MemoryNode {
     return {
       id: row['id'] as string,
-      title: row['title'] as string,
+      title: this.decrypt(row['title'] as string),
       content: this.decrypt(row['content'] as string),
       type: row['type'] as MemoryNode['type'],
       sourceId: row['source_id'] as string,
-      sourceName: row['source_name'] as string,
+      sourceName: this.decrypt(row['source_name'] as string),
       sourceType: row['source_type'] as string,
       timestamp: row['timestamp'] as number,
-      tags: JSON.parse(row['tags'] as string || '[]'),
-      entities: JSON.parse(row['entities'] as string || '[]'),
-      summary: row['summary'] as string | undefined,
-      metadata: JSON.parse(row['metadata'] as string || '{}'),
+      tags: this.jsonDecrypt<string[]>(row['tags'], []),
+      entities: this.jsonDecrypt<string[]>(row['entities'], []),
+      summary: row['summary'] ? this.decrypt(row['summary'] as string) : undefined,
+      metadata: this.jsonDecrypt<Record<string, unknown>>(row['metadata'], {}),
     }
   }
 
   // ─── EMBEDDINGS ─────────────────────────────────────────────────────────────
 
   saveEmbedding(nodeId: string, embedding: number[], model: string): void {
-    const buffer = Buffer.from(new Float32Array(embedding).buffer)
+    const buffer = Buffer.from(this.encrypt(JSON.stringify(embedding)), 'utf8')
     this.db.prepare(`
       INSERT OR REPLACE INTO memory_embeddings (node_id, embedding, dimensions, model)
       VALUES (?, ?, ?, ?)
@@ -579,7 +1045,7 @@ export class DatabaseService {
     `)
     const tx = this.db.transaction(() => {
       for (const { nodeId, embedding } of items) {
-        const buffer = Buffer.from(new Float32Array(embedding).buffer)
+        const buffer = Buffer.from(this.encrypt(JSON.stringify(embedding)), 'utf8')
         stmt.run(nodeId, buffer, embedding.length, model)
       }
     })
@@ -591,7 +1057,7 @@ export class DatabaseService {
       'SELECT embedding FROM memory_embeddings WHERE node_id = ?'
     ).get(nodeId) as { embedding: Buffer } | undefined
     if (!row) return null
-    return Array.from(new Float32Array(row.embedding.buffer))
+    return this.decodeEmbedding(row.embedding)
   }
 
   getAllEmbeddings(): Array<{ nodeId: string; embedding: number[] }> {
@@ -603,8 +1069,16 @@ export class DatabaseService {
     `).all() as Array<{ node_id: string; embedding: Buffer }>
     return rows.map(r => ({
       nodeId: r.node_id,
-      embedding: Array.from(new Float32Array(r.embedding.buffer)),
+      embedding: this.decodeEmbedding(r.embedding),
     }))
+  }
+
+  private decodeEmbedding(embedding: Buffer): number[] {
+    const text = embedding.toString('utf8')
+    if (text.startsWith('enc:')) {
+      try { return JSON.parse(this.decrypt(text)) as number[] } catch { return [] }
+    }
+    return Array.from(new Float32Array(embedding.buffer, embedding.byteOffset, embedding.byteLength / Float32Array.BYTES_PER_ELEMENT))
   }
 
   // ─── EDGES ─────────────────────────────────────────────────────────────────
@@ -620,7 +1094,7 @@ export class DatabaseService {
         (id, source_id, target_id, type, weight, label, metadata, site_id, version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(edge.id, edge.source, edge.target, edge.type, edge.weight,
-      edge.label || null, JSON.stringify(edge.metadata), this.siteId, version)
+      edge.label ? this.encrypt(edge.label) : null, this.jsonEncrypt(edge.metadata), this.siteId, version)
 
     this.logChange('memory_edges', edge.id, existing ? 'update' : 'insert', version)
   }
@@ -654,8 +1128,8 @@ export class DatabaseService {
       target: row['target_id'] as string,
       type: row['type'] as MemoryEdge['type'],
       weight: row['weight'] as number,
-      label: row['label'] as string | undefined,
-      metadata: JSON.parse(row['metadata'] as string || '{}'),
+      label: row['label'] ? this.decrypt(row['label'] as string) : undefined,
+      metadata: this.jsonDecrypt<Record<string, unknown>>(row['metadata'], {}),
     }
   }
 
@@ -673,9 +1147,9 @@ export class DatabaseService {
          color, icon, enabled, metadata, site_id, version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      source.id, source.name, source.type, source.path, source.status,
+      source.id, this.encrypt(source.name), source.type, this.encrypt(source.path), source.status,
       source.lastSynced || null, source.nodeCount, source.color, source.icon,
-      source.enabled ? 1 : 0, JSON.stringify(source.metadata),
+      source.enabled ? 1 : 0, this.jsonEncrypt(source.metadata),
       this.siteId, version
     )
 
@@ -722,16 +1196,16 @@ export class DatabaseService {
   private rowToSource(row: Record<string, unknown>): DataSource {
     return {
       id: row['id'] as string,
-      name: row['name'] as string,
+      name: this.decrypt(row['name'] as string),
       type: row['type'] as DataSource['type'],
-      path: row['path'] as string,
+      path: this.decrypt(row['path'] as string),
       status: row['status'] as DataSource['status'],
       lastSynced: row['last_synced'] as number | undefined,
       nodeCount: row['node_count'] as number,
       color: row['color'] as string,
       icon: row['icon'] as string,
       enabled: Boolean(row['enabled']),
-      metadata: JSON.parse(row['metadata'] as string || '{}'),
+      metadata: this.jsonDecrypt<Record<string, unknown>>(row['metadata'], {}),
     }
   }
 
@@ -748,9 +1222,9 @@ export class DatabaseService {
         (id, name, type, mentions, first_seen, last_seen, node_ids, summary, site_id, version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      entity.id, entity.name, entity.type, entity.mentions,
-      entity.firstSeen, entity.lastSeen, JSON.stringify(entity.nodeIds),
-      entity.summary || null, this.siteId, version
+      entity.id, this.encrypt(entity.name), entity.type, entity.mentions,
+      entity.firstSeen, entity.lastSeen, this.jsonEncrypt(entity.nodeIds),
+      entity.summary ? this.encrypt(entity.summary) : null, this.siteId, version
     )
   }
 
@@ -771,13 +1245,13 @@ export class DatabaseService {
   private rowToEntity(row: Record<string, unknown>): Entity {
     return {
       id: row['id'] as string,
-      name: row['name'] as string,
+      name: this.decrypt(row['name'] as string),
       type: row['type'] as Entity['type'],
       mentions: row['mentions'] as number,
       firstSeen: row['first_seen'] as number,
       lastSeen: row['last_seen'] as number,
-      nodeIds: JSON.parse(row['node_ids'] as string || '[]'),
-      summary: row['summary'] as string | undefined,
+      nodeIds: this.jsonDecrypt<string[]>(row['node_ids'], []),
+      summary: row['summary'] ? this.decrypt(row['summary'] as string) : undefined,
     }
   }
 
@@ -795,9 +1269,9 @@ export class DatabaseService {
          source_id, source_name, related_entities, significance, site_id, version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      event.id, event.nodeId, event.title, event.description, event.timestamp,
-      event.type, event.sourceId, event.sourceName,
-      JSON.stringify(event.relatedEntities), event.significance,
+      event.id, event.nodeId, this.encrypt(event.title), this.encrypt(event.description), event.timestamp,
+      event.type, event.sourceId, this.encrypt(event.sourceName),
+      this.jsonEncrypt(event.relatedEntities), event.significance,
       this.siteId, version
     )
   }
@@ -813,13 +1287,13 @@ export class DatabaseService {
     return {
       id: row['id'] as string,
       nodeId: row['node_id'] as string,
-      title: row['title'] as string,
-      description: row['description'] as string,
+      title: this.decrypt(row['title'] as string),
+      description: this.decrypt(row['description'] as string),
       timestamp: row['timestamp'] as number,
       type: row['type'] as TimelineEvent['type'],
       sourceId: row['source_id'] as string,
-      sourceName: row['source_name'] as string,
-      relatedEntities: JSON.parse(row['related_entities'] as string || '[]'),
+      sourceName: this.decrypt(row['source_name'] as string),
+      relatedEntities: this.jsonDecrypt<string[]>(row['related_entities'], []),
       significance: row['significance'] as TimelineEvent['significance'],
     }
   }
@@ -833,15 +1307,15 @@ export class DatabaseService {
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       uuidv4(),
-      result.query,
-      result.answer,
-      JSON.stringify(result.sources.map(s => ({
+      this.encrypt(result.query),
+      this.encrypt(result.answer),
+      this.jsonEncrypt(result.sources.map(s => ({
         title: s.node.title,
         sourceName: s.node.sourceName,
         score: s.score,
         timestamp: s.node.timestamp,
       }))),
-      JSON.stringify(result.entities),
+      this.jsonEncrypt(result.entities),
       result.confidence,
       result.processingTime
     )
@@ -853,11 +1327,11 @@ export class DatabaseService {
     ).all(limit) as Array<Record<string, unknown>>
 
     return rows.map(r => ({
-      query: r['query'] as string,
-      answer: r['answer'] as string,
+      query: this.decrypt(r['query'] as string),
+      answer: this.decrypt(r['answer'] as string),
       reasoning: '',
-      sources: JSON.parse(r['sources_json'] as string || '[]'),
-      entities: JSON.parse(r['entities_json'] as string || '[]'),
+      sources: this.jsonDecrypt(r['sources_json'], []),
+      entities: this.jsonDecrypt(r['entities_json'], []),
       confidence: r['confidence'] as number,
       processingTime: r['processing_time'] as number,
     }))
@@ -876,15 +1350,17 @@ export class DatabaseService {
   }
 
   private getOrCreateSigningKeys(): { privateKeyPem: string; publicKeyPem: string } {
-    const existing = this.getSetting<{ privateKeyPem: string; publicKeyPem: string }>('context_signing_key')
-    if (existing?.privateKeyPem && existing.publicKeyPem) return existing
+    const privateKeyPem = this.secrets.get('context_signing_private_key')
+    const publicKeyPem = this.getSetting<string>('context_signing_public_key')
+    if (privateKeyPem && publicKeyPem) return { privateKeyPem, publicKeyPem }
 
     const pair = generateKeyPairSync('ed25519', {
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
       publicKeyEncoding: { type: 'spki', format: 'pem' },
     })
     const keys = { privateKeyPem: pair.privateKey, publicKeyPem: pair.publicKey }
-    this.setSetting('context_signing_key', keys)
+    this.secrets.set('context_signing_private_key', keys.privateKeyPem)
+    this.setSetting('context_signing_public_key', keys.publicKeyPem)
     return keys
   }
 
@@ -947,7 +1423,7 @@ export class DatabaseService {
         (token_hash, token_id, token, context, summary, query, app_id, scope, source_ids, expires_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      hash, tokenId, token, input.context, input.summary, input.query || null,
+      hash, tokenId, token, this.encrypt(input.context), this.encrypt(input.summary), input.query ? this.encrypt(input.query) : null,
       input.appId, input.scope, JSON.stringify(input.sourceIds), expiresAt, now
     )
 
@@ -988,18 +1464,18 @@ export class DatabaseService {
       action: 'token_retrieved',
       token,
       sourceIds,
-      query: row['query'] as string | undefined,
+      query: row['query'] ? this.decrypt(row['query'] as string) : undefined,
       scope: row['scope'] as string | undefined,
       success: true,
     })
 
     return {
       token: row['token'] as string,
-      context: row['context'] as string,
-      summary: row['summary'] as string,
+      context: this.decrypt(row['context'] as string),
+      summary: this.decrypt(row['summary'] as string),
       expiresAt: row['expires_at'] as number,
       createdAt: row['created_at'] as number,
-      query: row['query'] as string | undefined,
+      query: row['query'] ? this.decrypt(row['query'] as string) : undefined,
       appId: row['app_id'] as string,
       scope: row['scope'] as string,
       sourceIds,
@@ -1017,10 +1493,10 @@ export class DatabaseService {
 
     return rows.map(row => ({
       token: row['token'] as string,
-      summary: row['summary'] as string,
+      summary: this.decrypt(row['summary'] as string),
       expiresAt: row['expires_at'] as number,
       createdAt: row['created_at'] as number,
-      query: row['query'] as string | undefined,
+      query: row['query'] ? this.decrypt(row['query'] as string) : undefined,
       appId: row['app_id'] as string,
       scope: row['scope'] as string,
       sourceIds: JSON.parse(row['source_ids'] as string || '[]'),
@@ -1064,11 +1540,11 @@ export class DatabaseService {
       entry.appId,
       entry.action,
       entry.token ? this.tokenHash(entry.token) : null,
-      JSON.stringify(entry.sourceIds),
-      entry.query || null,
+      this.jsonEncrypt(entry.sourceIds),
+      entry.query ? this.encrypt(entry.query) : null,
       entry.scope || null,
       entry.success ? 1 : 0,
-      entry.details || null,
+      entry.details ? this.encrypt(entry.details) : null,
       Date.now()
     )
   }
@@ -1083,11 +1559,11 @@ export class DatabaseService {
       appId: row['app_id'] as string,
       action: row['action'] as ContextAccessLog['action'],
       tokenHash: row['token_hash'] as string | undefined,
-      sourceIds: JSON.parse(row['source_ids'] as string || '[]'),
-      query: row['query'] as string | undefined,
+      sourceIds: this.jsonDecrypt<string[]>(row['source_ids'], []),
+      query: row['query'] ? this.decrypt(row['query'] as string) : undefined,
       scope: row['scope'] as string | undefined,
       success: Boolean(row['success']),
-      details: row['details'] as string | undefined,
+      details: row['details'] ? this.decrypt(row['details'] as string) : undefined,
       createdAt: row['created_at'] as number,
     }))
   }
@@ -1268,9 +1744,20 @@ export class DatabaseService {
   }
 
   setSetting(key: string, value: unknown): void {
+    if (key === 'encryption') value = true
+    if (key === 'encryptionKey' || key === 'context_signing_key') return
+    if (key === 'syncPeerKey') {
+      if (typeof value === 'string' && value.trim()) this.secrets.set('sync_peer_key', value.trim())
+      this.deleteSetting('syncPeerKey')
+      return
+    }
     this.db.prepare(`
       INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
     `).run(key, JSON.stringify(value), Date.now())
+  }
+
+  deleteSetting(key: string): void {
+    this.db.prepare('DELETE FROM app_settings WHERE key = ?').run(key)
   }
 
   getAllSettings(): AppSettings {
@@ -1281,6 +1768,10 @@ export class DatabaseService {
     for (const row of rows) {
       result[row.key] = JSON.parse(row.value)
     }
+    result.encryption = true
+    result.syncKey = this.getOrCreateSyncKey()
+    const peerKey = this.secrets.get('sync_peer_key')
+    if (peerKey) result.syncPeerKey = peerKey
     return result as unknown as AppSettings
   }
 

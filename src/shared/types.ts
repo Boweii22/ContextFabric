@@ -108,6 +108,51 @@ export interface AppSettings {
   allowedApps: Record<string, boolean>  // app identifier → globally allowed
   geminiApiKey?: string
   geminiModel?: string
+  syncKey?: string
+  syncPeerUrl?: string
+  syncPeerKey?: string
+  syncLanEnabled?: boolean
+}
+
+export interface CRSQLiteStatus {
+  enabled: boolean
+  siteId: string
+  dbVersion: number
+  syncKey: string
+  lanPort: number
+  lanUrls: string[]
+  lastError?: string
+  peers: SyncPeer[]
+}
+
+export interface SyncPeer {
+  peerSiteId: string
+  peerUrl?: string
+  lastSeen: number
+  lastReceivedDbVersion: number
+  lastSentDbVersion: number
+}
+
+export interface CRSQLiteChange {
+  table: string
+  pk: string
+  cid: string
+  val: unknown
+  valEncoding: 'json' | 'base64'
+  colVersion: number
+  dbVersion: number
+  siteId: string
+}
+
+export interface SyncRunResult {
+  ok: boolean
+  peerUrl: string
+  peerSiteId?: string
+  pulled: number
+  pushed: number
+  localDbVersion: number
+  remoteDbVersion?: number
+  message: string
 }
 
 export interface AppAccessGrant {
@@ -227,6 +272,8 @@ export type IpcChannel =
   | 'entities:get'
   | 'settings:get'
   | 'settings:set'
+  | 'sync:status'
+  | 'sync:run'
   | 'ollama:status'
   | 'ollama:models'
   | 'processing:status'

@@ -32,6 +32,10 @@ declare global {
         get: () => Promise<unknown>
         set: (key: string, value: unknown) => Promise<unknown>
       }
+      sync: {
+        status: () => Promise<unknown>
+        run: (peerUrl?: string, peerKey?: string) => Promise<unknown>
+      }
       ollama: {
         status: () => Promise<unknown>
         models: () => Promise<unknown>

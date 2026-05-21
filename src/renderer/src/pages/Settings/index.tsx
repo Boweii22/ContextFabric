@@ -7,7 +7,7 @@ import {
 import { api } from '../../lib/api'
 import { useAppStore } from '../../store'
 import { cn } from '../../lib/utils'
-import type { AppSettings } from '../../../../shared/types'
+import type { AppSettings, CRSQLiteStatus, SyncRunResult } from '../../../../shared/types'
 
 export default function SettingsPage(): React.ReactElement {
   const { settings, setSettings, ollamaConnected, setOllamaConnected } = useAppStore()
@@ -15,10 +15,14 @@ export default function SettingsPage(): React.ReactElement {
   const [saving, setSaving] = useState<string | null>(null)
   const [testingOllama, setTestingOllama] = useState(false)
   const [models, setModels] = useState<Array<{ name: string }>>([])
+  const [syncStatus, setSyncStatus] = useState<CRSQLiteStatus | null>(null)
+  const [syncRunning, setSyncRunning] = useState(false)
+  const [syncResult, setSyncResult] = useState<string | null>(null)
 
   useEffect(() => {
     if (settings) setLocalSettings({ ...settings })
     loadModels()
+    loadSyncStatus()
   }, [settings])
 
   async function loadModels() {
@@ -50,6 +54,34 @@ export default function SettingsPage(): React.ReactElement {
       if (status.connected) await loadModels()
     } finally {
       setTestingOllama(false)
+    }
+  }
+
+  async function loadSyncStatus() {
+    try {
+      setSyncStatus(await api.sync.status() as CRSQLiteStatus)
+    } catch {
+      setSyncStatus(null)
+    }
+  }
+
+  async function runDeviceSync() {
+    if (!localSettings?.syncPeerUrl || !localSettings.syncPeerKey) {
+      setSyncResult('Enter a peer URL and sync key first.')
+      return
+    }
+    setSyncRunning(true)
+    setSyncResult(null)
+    try {
+      await saveSetting('syncPeerUrl', localSettings.syncPeerUrl)
+      await saveSetting('syncPeerKey', localSettings.syncPeerKey)
+      const result = await api.sync.run(localSettings.syncPeerUrl, localSettings.syncPeerKey) as SyncRunResult
+      setSyncResult(result.message)
+      await loadSyncStatus()
+    } catch (error) {
+      setSyncResult(error instanceof Error ? error.message : 'Sync failed.')
+    } finally {
+      setSyncRunning(false)
     }
   }
 
@@ -217,6 +249,80 @@ export default function SettingsPage(): React.ReactElement {
               checked={localSettings.autoSync}
               onChange={v => { setLocalSettings({ ...localSettings, autoSync: v }); saveSetting('autoSync', v) }}
             />
+
+            <div className="p-3.5 rounded-xl bg-cosmos-700/40 border border-white/[0.06] space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-white">CR-SQLite device sync</div>
+                  <div className="text-xs text-slate-500">
+                    {syncStatus?.enabled ? `DB version ${syncStatus.dbVersion}` : syncStatus?.lastError || 'Checking sync engine...'}
+                  </div>
+                </div>
+                <div className={cn(
+                  'px-2 py-1 rounded-md text-xs',
+                  syncStatus?.enabled ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'
+                )}>
+                  {syncStatus?.enabled ? 'Enabled' : 'Offline'}
+                </div>
+              </div>
+
+              <SettingField label="This device URL" hint="Use one of these on your other device">
+                <div className="space-y-1">
+                  {(syncStatus?.lanUrls.length ? syncStatus.lanUrls : [`http://<this-device-ip>:${syncStatus?.lanPort || 47822}`]).map(url => (
+                    <code key={url} className="block text-2xs bg-cosmos-700/80 rounded-lg px-3 py-2 text-cyan-300 break-all">{url}</code>
+                  ))}
+                </div>
+              </SettingField>
+
+              <SettingField label="This device sync key" hint="Share only with your own devices">
+                <input
+                  type="password"
+                  readOnly
+                  value={syncStatus?.syncKey || ''}
+                  className="w-full bg-cosmos-700/50 border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none font-mono"
+                />
+              </SettingField>
+
+              <SettingField label="Peer device URL">
+                <input
+                  type="text"
+                  value={localSettings.syncPeerUrl || ''}
+                  onChange={e => setLocalSettings({ ...localSettings, syncPeerUrl: e.target.value })}
+                  placeholder="http://192.168.1.23:47822"
+                  className="w-full bg-cosmos-700/50 border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/40"
+                />
+              </SettingField>
+
+              <SettingField label="Peer sync key">
+                <input
+                  type="password"
+                  value={localSettings.syncPeerKey || ''}
+                  onChange={e => setLocalSettings({ ...localSettings, syncPeerKey: e.target.value })}
+                  placeholder="Paste the other device key"
+                  className="w-full bg-cosmos-700/50 border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/40 font-mono"
+                />
+              </SettingField>
+
+              <button
+                onClick={runDeviceSync}
+                disabled={syncRunning || !syncStatus?.enabled}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-cyan-500/30 text-xs text-cyan-200 hover:bg-cyan-500/10 disabled:opacity-50 transition-all"
+              >
+                {syncRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                Sync with peer
+              </button>
+
+              {syncResult && <p className="text-xs text-slate-400">{syncResult}</p>}
+              {syncStatus?.peers.length ? (
+                <div className="space-y-1">
+                  {syncStatus.peers.slice(0, 3).map(peer => (
+                    <div key={peer.peerSiteId} className="text-2xs text-slate-500">
+                      Peer {peer.peerSiteId.slice(0, 12)} · received v{peer.lastReceivedDbVersion} · sent v{peer.lastSentDbVersion}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </SettingsSection>
 
           {/* Local API */}

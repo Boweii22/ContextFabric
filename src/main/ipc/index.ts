@@ -4,12 +4,14 @@ import type { DatabaseService } from '../services/database'
 import type { OllamaService } from '../services/ollama'
 import { SearchService } from '../services/search'
 import { IngestionService } from '../services/ingestion'
+import type { SyncService } from '../services/sync'
 import type { DataSource, AIQueryResult, AppSettings } from '../../shared/types'
 
 export function registerIpcHandlers(
   db: DatabaseService,
   ollama: OllamaService,
-  getWindow: () => BrowserWindow | null
+  getWindow: () => BrowserWindow | null,
+  sync?: SyncService
 ): IngestionService {
   const search = new SearchService(db, ollama)
   const ingestion = new IngestionService(db, ollama)
@@ -280,6 +282,24 @@ export function registerIpcHandlers(
     }
 
     return true
+  })
+
+  // === MULTI-DEVICE SYNC ===
+
+  ipcMain.handle('sync:status', async () => {
+    return sync?.status() ?? db.getCRSQLiteStatus()
+  })
+
+  ipcMain.handle('sync:run', async (_, peerUrl?: string, peerKey?: string) => {
+    const settings = db.getAllSettings()
+    const url = peerUrl || settings.syncPeerUrl
+    const key = peerKey || settings.syncPeerKey
+    if (!sync) throw new Error('Sync service is not running')
+    if (!url || !key) throw new Error('Peer URL and sync key are required')
+    const result = await sync.run(String(url), String(key))
+    if (peerUrl) db.setSetting('syncPeerUrl', peerUrl)
+    if (peerKey) db.setSetting('syncPeerKey', peerKey)
+    return result
   })
 
   // === OLLAMA ===
