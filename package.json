@@ -11,6 +11,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "npm run build && electron-builder",
+    "extension:validate": "node scripts/package-extension.mjs --validate",
+    "extension:package": "node scripts/package-extension.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

@@ -25,6 +25,45 @@ function isTimeAwareQuery(query: string): boolean {
   return /\b(recent|latest|last|current|today|this week|this month|new|now|just|ago|yesterday)\b/i.test(query)
 }
 
+function looksLikeLayoutOrStyles(node: MemoryNode): boolean {
+  const text = node.content.slice(0, 1600).toLowerCase()
+  const markers = ['display:', 'position:', 'padding:', 'margin:', 'background:', 'border:', 'animation:', 'z-index:', '/*', '</div>']
+  return markers.filter(marker => text.includes(marker)).length >= 4
+}
+
+function identityScore(node: MemoryNode, query: string): number {
+  const words = identityTerms(query)
+  if (words.length === 0) return 0
+  const phrase = words.join(' ')
+  const compact = words.join('')
+  const title = node.title.toLowerCase()
+  const contentStart = node.content.slice(0, 2000).toLowerCase()
+  const compactText = `${title} ${contentStart}`.replace(/[^a-z0-9]/g, '')
+  let score = 0
+  if (title.includes(phrase)) score += 0.5
+  if (title.replace(/[^a-z0-9]/g, '').includes(compact)) score += 0.5
+  if (contentStart.includes(phrase)) score += 0.35
+  if (compactText.includes(compact)) score += 0.35
+  return score
+}
+
+function identityTerms(query: string): string[] {
+  return query
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !['could', 'tell', 'know', 'about', 'what', 'please', 'you', 'the', 'can'].includes(w))
+}
+
+function hasLiteralIdentityMatch(node: MemoryNode, query: string): boolean {
+  const words = identityTerms(query)
+  if (words.length === 0) return true
+  const compact = words.join('')
+  const text = `${node.title} ${node.content.slice(0, 5000)} ${node.entities.join(' ')}`.toLowerCase()
+  const compactText = text.replace(/[^a-z0-9]/g, '')
+  return words.some(word => text.includes(word)) || Boolean(compact && compactText.includes(compact))
+}
+
 export class SearchService {
   constructor(
     private db: DatabaseService,
@@ -88,7 +127,11 @@ export class SearchService {
     // Combine scores with recency
     const combined: SearchResult[] = Array.from(results.values()).map(({ node, semanticScore, keywordScore }) => {
       const rScore = recencyScore(node.timestamp)
-      const score = semanticScore * semanticWeight + keywordScore * keywordWeight + rScore * recencyWeight
+      const idScore = identityScore(node, query)
+      const literalMatch = hasLiteralIdentityMatch(node, query)
+      const adjustedSemantic = literalMatch ? semanticScore : semanticScore * 0.08
+      const noisePenalty = node.type === 'code' && looksLikeLayoutOrStyles(node) ? 0.03 : 1
+      const score = (adjustedSemantic * semanticWeight + keywordScore * keywordWeight + idScore + rScore * recencyWeight) * noisePenalty
       return {
         node,
         score,

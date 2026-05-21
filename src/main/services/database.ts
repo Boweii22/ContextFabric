@@ -999,16 +999,62 @@ export class DatabaseService {
   keywordSearch(query: string, limit = 20): Array<{ node: MemoryNode; score: number }> {
     const sanitized = query.replace(/[^a-zA-Z0-9 ]/g, ' ').trim()
     if (!sanitized) return []
-    const words = sanitized.toLowerCase().split(/\s+/).filter(w => w.length > 1)
+    const words = this.searchTerms(sanitized)
+    const phrase = words.join(' ')
+    const compactPhrase = words.join('')
     return this.getNodes(1000)
       .map(node => {
-        const text = `${node.title} ${node.content} ${node.tags.join(' ')} ${node.entities.join(' ')}`.toLowerCase()
-        const score = words.reduce((sum, word) => sum + (text.includes(word) ? 1 : 0), 0)
+        const title = node.title.toLowerCase()
+        const content = node.content.toLowerCase()
+        const metadata = `${node.tags.join(' ')} ${node.entities.join(' ')}`.toLowerCase()
+        const haystack = `${title} ${content} ${metadata}`
+        const compactHaystack = haystack.replace(/[^a-z0-9]/g, '')
+
+        let score = 0
+        if (phrase && title.includes(phrase)) score += 12
+        if (compactPhrase && title.replace(/[^a-z0-9]/g, '').includes(compactPhrase)) score += 12
+        if (phrase && content.includes(phrase)) score += 8
+        if (compactPhrase && compactHaystack.includes(compactPhrase)) score += 8
+
+        for (const word of words) {
+          if (title.includes(word)) score += 5
+          if (metadata.includes(word)) score += 3
+          if (content.includes(word)) score += 1
+        }
+
+        const contentStart = content.slice(0, 1200)
+        for (const word of words) {
+          if (contentStart.includes(word)) score += 1
+        }
+
+        if (node.type === 'code' && this.looksLikeLayoutOrStyles(node)) score *= 0.25
+        if (node.title.toLowerCase().match(/\.(css|scss)$/)) score *= 0.2
+
         return { node, score }
       })
       .filter(result => result.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
+  }
+
+  private searchTerms(query: string): string[] {
+    const stopwords = new Set([
+      'a', 'an', 'and', 'are', 'about', 'could', 'can', 'for', 'from', 'give',
+      'i', 'is', 'it', 'know', 'me', 'of', 'on', 'please', 'tell', 'the',
+      'this', 'to', 'what', 'whats', 'you', 'your',
+    ])
+    return query
+      .toLowerCase()
+      .split(/\s+/)
+      .map(w => w.trim())
+      .filter(w => w.length > 1 && !stopwords.has(w))
+  }
+
+  private looksLikeLayoutOrStyles(node: MemoryNode): boolean {
+    const text = node.content.slice(0, 1600).toLowerCase()
+    const cssMarkers = ['{', '}', 'display:', 'position:', 'padding:', 'margin:', 'background:', 'border:', 'animation:', 'z-index:']
+    const markerCount = cssMarkers.reduce((sum, marker) => sum + (text.includes(marker) ? 1 : 0), 0)
+    return markerCount >= 5 || text.includes('/*') || text.includes('</div>')
   }
 
   private rowToNode(row: Record<string, unknown>): MemoryNode {

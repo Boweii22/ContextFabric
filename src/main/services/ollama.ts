@@ -67,13 +67,18 @@ export class OllamaService {
   // which is what causes "memory layout cannot be allocated" on 16 GB machines.
   async ensureConstrainedModel(): Promise<void> {
     if (this.constrainedModelReady) return
-    if (this.model === this.constrainedModelName) {
+    const models = await this.listModels()
+    const modelNames = models.map(m => m.name)
+    if (modelNames.some(name => name === this.constrainedModelName || name === `${this.constrainedModelName}:latest`)) {
+      this.model = this.constrainedModelName
       this.constrainedModelReady = true
       return
     }
-    if (!this.model.includes('gemma4')) return
 
-    const sourceModel = this.model
+    const sourceModel = this.model === this.constrainedModelName
+      ? modelNames.find(name => /gemma4|gemma3/i.test(name) && !name.startsWith(this.constrainedModelName))
+      : this.model
+    if (!sourceModel || !/gemma4|gemma3/i.test(sourceModel)) return
 
     try {
       console.log(`[Ollama] Creating memory-constrained model ${this.constrainedModelName} (num_ctx=${this.runtimeContext}) from ${sourceModel}...`)
@@ -104,7 +109,7 @@ export class OllamaService {
         console.log(`[Ollama] Ready: using ${this.constrainedModelName} (num_ctx=${this.runtimeContext}, low-memory)`)
       } else {
         console.warn(`[Ollama] Model creation failed (HTTP ${res.status}): ${responseBody.substring(0, 300)}`)
-        console.warn('[Ollama] Falling back to original model — OOM errors may occur')
+        console.warn('[Ollama] Falling back to original model â€” OOM errors may occur')
       }
     } catch (err) {
       console.warn('[Ollama] Could not create constrained model:', err instanceof Error ? err.message : err)
@@ -204,14 +209,14 @@ export class OllamaService {
 
       const ollamaMsg = this.extractOllamaError(body)
 
-      // Aborted (enrichment cancelled for a user query) — silent
+      // Aborted (enrichment cancelled for a user query) â€” silent
       if (axiosErr?.code === 'ERR_CANCELED' || axiosErr?.message?.includes('canceled')) {
         throw new Error('enrichment_aborted')
       }
 
-      // Timeout — give a clear actionable message
+      // Timeout â€” give a clear actionable message
       if (axiosErr?.code === 'ECONNABORTED' || axiosErr?.message?.includes('timeout')) {
-        throw new Error(`Ollama timed out after ${timeoutMs / 1000}s — try a shorter question, or check that Ollama isn't overloaded`)
+        throw new Error(`Ollama timed out after ${timeoutMs / 1000}s â€” try a shorter question, or check that Ollama isn't overloaded`)
       }
 
       // On 500: retry once with a much shorter prompt
@@ -231,7 +236,7 @@ export class OllamaService {
           const rb = (retryErr as { response?: { data?: unknown } })?.response?.data
           const rbMsg = this.extractOllamaError(rb)
           if (this.isMemoryLayoutError(rbMsg || ollamaMsg)) await this.unloadModel()
-          throw new Error(`Ollama 500: ${rbMsg || ollamaMsg || 'model error — check ollama logs'}`)
+          throw new Error(`Ollama 500: ${rbMsg || ollamaMsg || 'model error â€” check ollama logs'}`)
         }
       }
 
@@ -249,7 +254,7 @@ export class OllamaService {
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
       if (status === 404) {
-        // Embedding model not installed — use deterministic fallback silently
+        // Embedding model not installed â€” use deterministic fallback silently
         // Pull it with: ollama pull nomic-embed-text
       } else {
         console.warn('[Ollama] Embed failed, using fallback:', status)
@@ -268,7 +273,7 @@ export class OllamaService {
   }
 
 
-  // Google AI Studio streaming — automatic fallback when local Ollama has OOM errors
+  // Google AI Studio streaming â€” automatic fallback when local Ollama has OOM errors
   private async generateWithGemini(prompt: string, onChunk: (text: string) => void): Promise<string> {
     if (!this.geminiApiKey) throw new Error('No Gemini API key configured')
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.geminiModel}:streamGenerateContent?key=${this.geminiApiKey}&alt=sse`
@@ -311,7 +316,7 @@ export class OllamaService {
     return this.clean(fullText)
   }
 
-  // Streaming generate — calls onChunk for each visible token, filters <think> blocks live
+  // Streaming generate â€” calls onChunk for each visible token, filters <think> blocks live
   private async generateStream(
     prompt: string,
     onChunk: (text: string) => void,
@@ -419,13 +424,15 @@ export class OllamaService {
     citations: Array<{ index: number; title: string; sourceName: string }>
     detectedConflicts: string[]
   }> {
-    const chunks = contextChunks.slice(0, 2)
+    await this.ensureConstrainedModel()
+    const chunks = contextChunks.slice(0, 4)
 
-    let prompt = `Answer the question in 2-4 sentences using only the facts below. Be direct. No thinking.\n\n`
+    let prompt = `Answer the question in 3-5 clear sentences using only the facts below. Do not paste raw excerpts. Explain what the project is, who it is for, and what it does. No thinking.\n\n`
 
     if (chunks.length > 0) {
       chunks.forEach((c, i) => {
-        prompt += `[${i + 1}] ${c.source.split(' — ')[1] || c.source}: ${c.content.substring(0, 180).replace(/\n/g, ' ')}\n`
+        const title = c.source.includes('—') ? c.source.split('—').slice(1).join('—').trim() : c.source
+        prompt += `[${i + 1}] ${title}:\n${c.content.substring(0, 900).replace(/\n{3,}/g, '\n\n')}\n\n`
       })
       prompt += '\n'
     }
@@ -440,7 +447,7 @@ export class OllamaService {
 
     prompt += `Q: ${userQuery}\nA:`
 
-    // ── Generate (streaming) — falls back to Gemini API on OOM ─────────────────
+    // â”€â”€ Generate (streaming) â€” falls back to Gemini API on OOM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let answer = ''
     try {
       answer = await this.generateStream(prompt, onChunk ?? (() => {}), 160)
@@ -453,20 +460,19 @@ export class OllamaService {
       throw new Error(`Ollama failed: ${errMsg}`)
     }
 
-    // Fallbacks ─────────────────────────────────────────────────────────────
+    // Fallbacks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (!answer || answer.length < 8) {
       const isStackQuestion = /stack|technolog|framework|language|library|built with/i.test(userQuery)
       if (isStackQuestion && importLines.length > 0) {
         answer = this.buildStackAnswer(importLines)
       } else if (chunks.length > 0) {
-        answer = `Here's what I found:\n\n` +
-          chunks.slice(0, 2).map((c, i) => `**[${i + 1}] ${c.source}**\n${c.content.substring(0, 200)}`).join('\n\n')
+        answer = this.buildExtractiveAnswer(userQuery, chunks)
       } else {
         answer = `Nothing found matching "${userQuery}". Try syncing your sources first.`
       }
     }
 
-    // ── Parse inline citations [N] from answer ────────────────────────────────
+    // â”€â”€ Parse inline citations [N] from answer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const citationSet = new Set<number>()
     const citationRe = /\[(\d+)\]/g
     let m: RegExpExecArray | null
@@ -476,22 +482,83 @@ export class OllamaService {
     }
     const citations = [...citationSet].map(idx => {
       const chunk = chunks[idx - 1]
-      const parts = chunk.source.split(' — ')
+      const parts = chunk.source.split(' â€” ')
       return { index: idx, title: parts[1] || parts[0], sourceName: parts[0] }
     })
 
-    // ── Extract any conflict notes Gemma wrote ────────────────────────────────
+    // â”€â”€ Extract any conflict notes Gemma wrote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const detectedConflicts: string[] = []
-    const conflictRe = /⚠️ Conflict:([^\n.]+)/gi
+    const conflictRe = /âš ï¸ Conflict:([^\n.]+)/gi
     while ((m = conflictRe.exec(answer)) !== null) {
       detectedConflicts.push(m[1].trim())
     }
 
     const reasoning = chunks.length > 0
-      ? `Reasoned across ${chunks.length} source(s) from ${[...new Set(chunks.map(c => c.source.split(' — ')[0]))].join(', ')}.${decisionChain.length > 0 ? ` Referenced ${decisionChain.length} past decision(s).` : ''}`
+      ? `Reasoned across ${chunks.length} source(s) from ${[...new Set(chunks.map(c => c.source.split(' â€” ')[0]))].join(', ')}.${decisionChain.length > 0 ? ` Referenced ${decisionChain.length} past decision(s).` : ''}`
       : 'No matching sources found in your knowledge base.'
 
     return { answer, reasoning, citations, detectedConflicts }
+  }
+
+  buildExtractiveAnswer(
+    userQuery: string,
+    chunks: Array<{ content: string; source: string; timestamp: number; sourceType?: string }>
+  ): string {
+    if (chunks.length === 0) return `Nothing found matching "${userQuery}". Try syncing your sources first.`
+    const text = chunks.map(c => c.content).join('\n\n')
+    const title = this.extractProjectTitle(text) || 'This project'
+    const sentences = this.extractUsefulSentences(text, userQuery)
+    const phase = this.extractPhaseLine(text)
+    const parts: string[] = []
+
+    if (sentences.length > 0) {
+      parts.push(`${title} is ${this.lowerFirst(sentences[0])}`)
+      parts.push(...sentences.slice(1, 4))
+    } else {
+      parts.push(`${title} is described in your indexed project notes, but the available chunks are too fragmentary for a detailed summary.`)
+    }
+    if (phase) parts.push(`Current roadmap/status: ${phase}.`)
+    parts.push(`Source: ${chunks[0].source}.`)
+    return parts.join(' ')
+  }
+
+  private extractProjectTitle(text: string): string | null {
+    const heading = text.match(/^#\s+(.+?)(?:\s+[-—]\s+|$)/m)
+    if (heading?.[1]) return heading[1].trim()
+    const named = text.match(/\b([A-Z][A-Za-z0-9]+Match)\b/)
+    return named?.[1] || null
+  }
+
+  private extractUsefulSentences(text: string, query: string): string[] {
+    const terms = query.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length > 3)
+    const cleaned = text
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/\|[-:\s|]+\|/g, ' ')
+      .replace(/[#>*_`[\]]/g, '')
+      .split(/(?<=[.!?])\s+|\n+/)
+      .map(s => s.trim().replace(/\s+/g, ' '))
+      .filter(s => s.length > 35 && s.length < 260)
+      .filter(s => !/^\|/.test(s) && !/watch th|quick links/i.test(s))
+
+    return cleaned
+      .map(sentence => ({
+        sentence,
+        score: terms.reduce((sum, term) => sum + (sentence.toLowerCase().includes(term) ? 2 : 0), 0) +
+          (/\b(local|clinical|trial|pdf|offline|patient|matching|languages|email)\b/i.test(sentence) ? 1 : 0),
+      }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.sentence)
+      .slice(0, 4)
+  }
+
+  private extractPhaseLine(text: string): string | null {
+    const match = text.match(/\|\s*v1\s*\(now\)\s*\|\s*([^|]+)\|/i)
+    return match?.[1]?.trim() || null
+  }
+
+  private lowerFirst(text: string): string {
+    return text ? text.charAt(0).toLowerCase() + text.slice(1) : text
   }
 
   // Only called for stack-specific questions when Gemma returns empty
@@ -539,7 +606,7 @@ export class OllamaService {
   }
 
   async extractEntities(text: string): Promise<Array<{ name: string; type: string }>> {
-    // Always get regex hits first — fast and reliable
+    // Always get regex hits first â€” fast and reliable
     const regexHits = this.simpleEntityExtract(text)
 
     try {
@@ -600,7 +667,7 @@ JSON:`
     reasoning?: string
     alternatives?: string[]
   }> {
-    // Quick heuristic first — skip if content doesn't look like it has a decision
+    // Quick heuristic first â€” skip if content doesn't look like it has a decision
     const decisionSignals = /\b(decided|chose|rejected|switched|picked|went with|instead of|rather than|because|reason|alternative|option|vs|versus|tradeoff|trade-off)\b/i
     if (!decisionSignals.test(text)) return { isDecision: false }
 
@@ -619,7 +686,7 @@ JSON response:`
 
       const response = await this.generate(prompt, 30000, this.enrichmentController?.signal)
 
-      // Extract JSON from response — Gemma sometimes wraps it in markdown
+      // Extract JSON from response â€” Gemma sometimes wraps it in markdown
       const match = response.match(/\{[\s\S]*?\}/)
       if (!match) return { isDecision: false }
 
@@ -673,3 +740,5 @@ JSON response:`
     return entities.slice(0, 8)
   }
 }
+
+

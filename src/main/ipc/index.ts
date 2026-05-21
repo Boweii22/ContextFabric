@@ -26,7 +26,7 @@ export function registerIpcHandlers(
         node: n,
         score: 1,
         highlights: [n.summary || n.content.substring(0, 120)],
-        sourceContext: `${n.sourceName} · ${new Date(n.timestamp).toLocaleDateString()}`,
+        sourceContext: `${n.sourceName} Â· ${new Date(n.timestamp).toLocaleDateString()}`,
       }))
     }
     return await search.hybridSearch(query, limit)
@@ -37,7 +37,7 @@ export function registerIpcHandlers(
     ingestion.setQueryActive(true)
 
     try {
-    // Build source metadata context — always included so Gemma knows what exists
+    // Build source metadata context â€” always included so Gemma knows what exists
     const allSources = db.getSources()
     const sourceMeta = allSources
       .filter(s => s.status === 'ready')
@@ -54,29 +54,39 @@ export function registerIpcHandlers(
       expansionTerms.map(q => search.hybridSearch(q, 5))
     )
 
-    // Deduplicate, boost early file chunks and named config files
+    // Deduplicate, boost identity/doc matches, and demote layout-only code chunks.
     const seen = new Set<string>()
-    const merged = allResults
+    const queryIdentity = query.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/)
+      .filter(w => w.length > 2 && !['could', 'tell', 'know', 'about', 'what', 'please', 'you', 'the', 'can'].includes(w))
+    const compactIdentity = queryIdentity.join('')
+    const candidates = allResults
       .flat()
       .filter(r => { if (seen.has(r.node.id)) return false; seen.add(r.node.id); return true })
       .map(r => {
         const chunkIndex = (r.node.metadata as Record<string, unknown>)?.chunkIndex as number ?? 99
-        const earlyBoost = chunkIndex <= 2 ? 0.15 : chunkIndex <= 5 ? 0.07 : 0
+        const earlyBoost = r.node.type === 'code' ? 0 : chunkIndex <= 2 ? 0.15 : chunkIndex <= 5 ? 0.07 : 0
         const title = r.node.title.toLowerCase()
+        const compactText = `${r.node.title} ${r.node.content.slice(0, 1500)}`.toLowerCase().replace(/[^a-z0-9]/g, '')
         const nameBoost = (
           title.includes('readme') || title.includes('requirements') ||
           title.includes('package.json') || title.includes('pyproject') ||
           title.includes('cargo.toml') || title.includes('go.mod') ||
           title.includes('setup.py') || title.includes('setup.cfg')
         ) ? 0.25 : 0
-        return { ...r, score: r.score + earlyBoost + nameBoost }
+        const identityBoost = compactIdentity && compactText.includes(compactIdentity) ? 0.55 : 0
+        const layoutPenalty = r.node.type === 'code' && looksLikeLayoutOrStyles(r.node.content) ? 0.45 : 1
+        return { ...r, score: (r.score + earlyBoost + nameBoost + identityBoost) * layoutPenalty }
       })
       .sort((a, b) => b.score - a.score)
-      .slice(0, 6)
+
+    const literalMatches = candidates.filter(r => hasLiteralIdentityMatch(r.node.title, r.node.content, queryIdentity, compactIdentity))
+    const nonLayoutMatches = literalMatches.filter(r => !looksLikeLayoutOrStyles(r.node.content))
+    const pool = nonLayoutMatches.length > 0 ? nonLayoutMatches : literalMatches.length > 0 ? literalMatches : candidates
+    const merged = pool.slice(0, 6)
 
     const importLines = extractImportLines(merged.map(r => r.node.content))
 
-    // ── Decision chain: fetch timeline events relevant to the query ───────────
+    // â”€â”€ Decision chain: fetch timeline events relevant to the query â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const allTimeline = db.getTimeline(50)
     const queryWords = new Set(query.toLowerCase().split(/\s+/).filter(w => w.length > 3))
     const decisionChain = allTimeline
@@ -85,14 +95,14 @@ export function registerIpcHandlers(
         return [...queryWords].some(w => text.includes(w))
       })
       .slice(0, 5)
-      .map(e => `${e.title}${e.description ? ` — ${e.description.substring(0, 80)}` : ''}`)
+      .map(e => `${e.title}${e.description ? ` â€” ${e.description.substring(0, 80)}` : ''}`)
 
-    // ── Conflict detection: same entity, opposing sentiment across chunks ──────
+    // â”€â”€ Conflict detection: same entity, opposing sentiment across chunks â”€â”€â”€â”€â”€â”€
     const conflicts = detectConflicts(merged.map(r => r.node))
 
     const contextChunks = merged.map(r => ({
       content: r.node.content,
-      source: `${r.node.sourceName} — ${r.node.title}`,
+      source: `${r.node.sourceName} â€” ${r.node.title}`,
       timestamp: r.node.timestamp,
       sourceType: r.node.type,
     }))
@@ -115,11 +125,8 @@ export function registerIpcHandlers(
     } catch (aiErr) {
       console.error('[Query] Ollama error:', aiErr instanceof Error ? aiErr.message : aiErr)
       if (merged.length > 0) {
-        answer = `Here's what I found in your knowledge base:\n\n` +
-          merged.slice(0, 3).map((r, i) =>
-            `**[${i + 1}] ${r.node.title}** (${r.node.sourceName})\n${r.node.content.substring(0, 200).replace(/\n/g, ' ')}...`
-          ).join('\n\n')
-        reasoning = `AI unavailable — showing top ${Math.min(merged.length, 3)} search results directly.`
+        answer = ollama.buildExtractiveAnswer(query, contextChunks)
+        reasoning = `Generated a local extractive answer from ${Math.min(merged.length, 4)} retrieved source chunk(s) because the model call failed.`
       } else {
         answer = `Nothing found in your indexed sources matching "${query}".`
         reasoning = 'No matching sources found.'
@@ -400,6 +407,19 @@ function expandQuery(query: string): string[] {
   return [...new Set(terms)]
 }
 
+function looksLikeLayoutOrStyles(content: string): boolean {
+  const text = content.slice(0, 1600).toLowerCase()
+  const markers = ['display:', 'position:', 'padding:', 'margin:', 'background:', 'border:', 'animation:', 'z-index:', '/*', '</div>']
+  return markers.filter(marker => text.includes(marker)).length >= 4
+}
+
+function hasLiteralIdentityMatch(title: string, content: string, terms: string[], compactTerms: string): boolean {
+  if (terms.length === 0) return true
+  const text = `${title} ${content.slice(0, 5000)}`.toLowerCase()
+  const compactText = text.replace(/[^a-z0-9]/g, '')
+  return terms.some(term => text.includes(term)) || Boolean(compactTerms && compactText.includes(compactTerms))
+}
+
 // Pull every import/require/use line from code chunks so Gemma
 // gets explicit library names even if the relevant chunk wasn't top-ranked.
 function extractImportLines(contents: string[]): string[] {
@@ -428,7 +448,7 @@ function detectConflicts(nodes: import('../../shared/types').MemoryNode[]): stri
   const positiveRe = /\b(use|using|chose|chosen|adopted|went with|decided on|picked)\s+(\w+)/gi
   const negativeRe = /\b(rejected|replaced|dropped|abandoned|switched from|moved away from|stopped using)\s+(\w+)/gi
 
-  const positive = new Map<string, string>() // entity → source title
+  const positive = new Map<string, string>() // entity â†’ source title
   const negative = new Map<string, string>()
   const conflicts: string[] = []
 
@@ -448,7 +468,7 @@ function detectConflicts(nodes: import('../../shared/types').MemoryNode[]): stri
   for (const [entity, posSrc] of positive) {
     const negSrc = negative.get(entity)
     if (negSrc && negSrc !== posSrc) {
-      conflicts.push(`"${entity}" — ${posSrc} says it's in use, ${negSrc} says it was replaced`)
+      conflicts.push(`"${entity}" â€” ${posSrc} says it's in use, ${negSrc} says it was replaced`)
     }
   }
 

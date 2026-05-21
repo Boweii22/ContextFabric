@@ -1,8 +1,11 @@
 {
   "manifest_version": 3,
   "name": "ContextFabric Bridge",
+  "short_name": "ContextFabric",
   "version": "0.1.0",
   "description": "Inject approved local ContextFabric memory into AI chat tools.",
+  "homepage_url": "https://contextfabric.ai",
+  "minimum_chrome_version": "116",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
     "http://localhost:47821/*",

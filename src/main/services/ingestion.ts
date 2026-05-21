@@ -1,9 +1,10 @@
-import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'fs'
 import { join, extname, basename, dirname } from 'path'
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { createHash } from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import chokidar, { FSWatcher } from 'chokidar'
+import { app } from 'electron'
 import type { DatabaseService } from './database'
 import type { OllamaService } from './ollama'
 import type { MemoryNode, MemoryEdge, DataSource, Entity, ProcessingStatus } from '../../shared/types'
@@ -15,6 +16,8 @@ const TEXT_EXTENSIONS = new Set([
   '.md', '.txt', '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs',
   '.json', '.yaml', '.yml', '.toml', '.env.example', '.sh', '.bash',
   '.css', '.scss', '.html', '.xml', '.csv', '.sql', '.graphql',
+  '.mjs', '.cjs', '.java', '.kt', '.swift', '.php', '.rb', '.cs',
+  '.cpp', '.c', '.h', '.hpp', '.vue', '.svelte', '.astro', '.dockerfile',
 ])
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.sh', '.bash', '.sql'])
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'out',
@@ -52,8 +55,7 @@ export class IngestionService {
       let resolvedType = source.type
       try {
         if (statSync(source.path).isDirectory() &&
-            (source.type === 'claude_export' || source.type === 'chatgpt_export' ||
-             source.type === 'markdown' || source.type === 'pdf')) {
+            (source.type === 'markdown' || source.type === 'pdf')) {
           console.warn(`[Ingestion] "${source.name}" path is a directory — switching to local_folder ingestion`)
           resolvedType = 'local_folder'
         }
@@ -95,21 +97,21 @@ export class IngestionService {
   // ─── Claude export ─────────────────────────────────────────────────────────
 
   private async ingestClaudeExport(source: DataSource, onStatus?: StatusCallback): Promise<number> {
-    const raw = JSON.parse(readFileSync(source.path, 'utf-8'))
-    const conversations: unknown[] = Array.isArray(raw) ? raw : [raw]
+    const conversations = this.loadClaudeConversations(source.path)
     const nodes: MemoryNode[] = []
 
     for (let i = 0; i < conversations.length; i++) {
       const conv = conversations[i] as Record<string, unknown>
-      const messages = (conv['messages'] as unknown[]) || []
-      const title = (conv['title'] as string) || `Conversation ${i + 1}`
-      const ts = conv['created_at'] ? new Date(conv['created_at'] as string).getTime() : Date.now()
+      const messages = this.asArray(conv['messages'] || conv['chat_messages'])
+      const title = String(conv['title'] || conv['name'] || conv['uuid'] || `Conversation ${i + 1}`)
+      const ts = this.parseTimestamp(conv['created_at'] || conv['updated_at'] || conv['createdAt'])
 
       let text = ''
       for (const msg of messages) {
         const m = msg as Record<string, unknown>
-        const role = (m['role'] as string) === 'human' ? 'User' : 'Assistant'
-        const content = this.extractMessageContent(m['content'])
+        const rawRole = String(m['role'] || m['sender'] || m['author'] || '')
+        const role = rawRole === 'human' || rawRole === 'user' ? 'User' : 'Assistant'
+        const content = this.extractMessageContent(m['content'] || m['text'] || m['message'])
         if (content) text += `${role}: ${content}\n\n`
       }
       if (text.length < 50) continue
@@ -130,14 +132,13 @@ export class IngestionService {
   // ─── ChatGPT export ────────────────────────────────────────────────────────
 
   private async ingestChatGPTExport(source: DataSource, onStatus?: StatusCallback): Promise<number> {
-    const raw = JSON.parse(readFileSync(source.path, 'utf-8'))
-    const conversations: unknown[] = Array.isArray(raw) ? raw : [raw]
+    const conversations = this.loadChatGPTConversations(source.path)
     const nodes: MemoryNode[] = []
 
     for (let i = 0; i < conversations.length; i++) {
       const conv = conversations[i] as Record<string, unknown>
-      const title = (conv['title'] as string) || `Conversation ${i + 1}`
-      const ts = ((conv['create_time'] as number) || 0) * 1000 || Date.now()
+      const title = String(conv['title'] || conv['conversation_title'] || `Conversation ${i + 1}`)
+      const ts = this.parseTimestamp(conv['create_time'] || conv['update_time'] || conv['created_at'])
 
       // ChatGPT uses a node-based mapping tree
       let text = ''
@@ -156,11 +157,17 @@ export class IngestionService {
         const msg = v['message'] as Record<string, unknown>
         const author = ((msg['author'] as Record<string, unknown>)?.['role'] as string) || ''
         if (author === 'system') continue
-        const parts = ((msg['content'] as Record<string, unknown>)?.['parts'] as unknown[]) || []
-        const content = parts
-          .map(p => typeof p === 'string' ? p : (p as Record<string,unknown>)?.['text'] || '')
-          .join('\n').trim()
-        if (content) text += `${author === 'user' ? 'User' : 'Assistant'}: ${content}\n\n`
+        const content = this.extractChatGPTMessageContent(msg)
+        if (content) text += `${author === 'user' ? 'User' : author === 'tool' ? 'Tool' : 'Assistant'}: ${content}\n\n`
+      }
+
+      if (!text && Array.isArray(conv['messages'])) {
+        for (const msg of conv['messages'] as unknown[]) {
+          const m = msg as Record<string, unknown>
+          const author = String(m['role'] || m['author'] || '')
+          const content = this.extractMessageContent(m['content'] || m['text'])
+          if (content) text += `${author === 'user' ? 'User' : 'Assistant'}: ${content}\n\n`
+        }
       }
 
       if (text.length < 50) continue
@@ -242,12 +249,13 @@ export class IngestionService {
 
   private async ingestGitHubRepo(source: DataSource, onStatus?: StatusCallback): Promise<number> {
     const nodes: MemoryNode[] = []
+    const repoPath = this.resolveGitRepository(source.path, onStatus, source.id)
 
     // 1. Source files (same as local folder)
     onStatus?.({ sourceId: source.id, phase: 'parsing', progress: 0, total: 1,
       message: 'Scanning repo files…', startTime: Date.now() })
 
-    this.walkDir(source.path, (fullPath, stat) => {
+    this.walkDir(repoPath, (fullPath, stat) => {
       const ext = extname(fullPath).toLowerCase()
       if (!TEXT_EXTENSIONS.has(ext)) return
       if (Number(stat?.size ?? 0) > 300_000) return
@@ -257,7 +265,7 @@ export class IngestionService {
         const isCode = CODE_EXTENSIONS.has(ext)
         const mtimeMs = Number(stat?.mtimeMs ?? Date.now())
         for (const [ci, chunk] of this.chunkText(content, isCode ? 3000 : 4000).entries()) {
-          nodes.push(this.makeNode(chunk, isCode ? 'code' : 'document', source, mtimeMs, {
+          nodes.push(this.makeNode(chunk, isCode ? 'code' : 'document', { ...source, path: repoPath }, mtimeMs, {
             title: `${basename(fullPath)}${ci > 0 ? ` (${ci + 1})` : ''}`,
             path: fullPath, ext, chunkIndex: ci,
           }))
@@ -270,7 +278,7 @@ export class IngestionService {
       message: 'Reading commit history…', startTime: Date.now() })
 
     try {
-      const commits = this.parseGitLog(source.path)
+      const commits = this.parseGitLog(repoPath)
       onStatus?.({ sourceId: source.id, phase: 'parsing', progress: 0, total: 1,
         message: `Found ${commits.length} commits`, startTime: Date.now() })
 
@@ -289,7 +297,7 @@ export class IngestionService {
             : '',
         ].filter(Boolean).join('\n')
 
-        nodes.push(this.makeNode(text, 'document', source, commit.timestamp, {
+        nodes.push(this.makeNode(text, 'document', { ...source, path: repoPath }, commit.timestamp, {
           title: `Commit: ${commit.subject.substring(0, 60)}`,
           commitHash: commit.hash,
           author: commit.author,
@@ -312,8 +320,9 @@ export class IngestionService {
     const SEP = '---COMMIT---'
     const FORMAT = `${SEP}%n%H%n%an%n%ai%n%s%n%b%n---FILES---`
 
-    const log = execSync(
-      `git log --format="${FORMAT}" --name-only --max-count=500`,
+    const log = execFileSync(
+      'git',
+      ['log', `--format=${FORMAT}`, '--name-only', '--max-count=500'],
       { cwd: repoPath, encoding: 'utf-8', timeout: 15000 }
     )
 
@@ -883,6 +892,123 @@ export class IngestionService {
         }
       }
     } catch { /* skip unreadable dir */ }
+  }
+
+  private loadClaudeConversations(path: string): Array<Record<string, unknown>> {
+    const files = this.resolveExportJsonFiles(path, ['conversations.json', 'claude.json', 'data.json'])
+    const conversations: Array<Record<string, unknown>> = []
+    for (const file of files) {
+      const raw = this.readJson(file)
+      const list = this.extractConversationArray(raw, ['conversations', 'chats', 'data'])
+      conversations.push(...list)
+    }
+    return conversations
+  }
+
+  private loadChatGPTConversations(path: string): Array<Record<string, unknown>> {
+    const files = this.resolveExportJsonFiles(path, ['conversations.json', 'chatgpt.json', 'data.json'])
+    const conversations: Array<Record<string, unknown>> = []
+    for (const file of files) {
+      const raw = this.readJson(file)
+      const list = this.extractConversationArray(raw, ['conversations', 'items', 'data'])
+      conversations.push(...list)
+    }
+    return conversations
+  }
+
+  private resolveExportJsonFiles(path: string, preferred: string[]): string[] {
+    if (!existsSync(path)) throw new Error(`Export path does not exist: ${path}`)
+    if (statSync(path).isFile()) {
+      if (extname(path).toLowerCase() !== '.json') throw new Error('Export connector expects a JSON file or extracted export folder')
+      return [path]
+    }
+
+    const found: string[] = []
+    const preferredLower = new Set(preferred.map(name => name.toLowerCase()))
+    this.walkDir(path, (fullPath, stat) => {
+      if (Number(stat.size) > 100_000_000) return
+      if (extname(fullPath).toLowerCase() !== '.json') return
+      if (preferredLower.has(basename(fullPath).toLowerCase())) found.unshift(fullPath)
+      else if (basename(fullPath).toLowerCase().includes('conversation')) found.push(fullPath)
+    }, 0)
+
+    const unique = [...new Set(found)]
+    if (unique.length === 0) throw new Error(`No conversation JSON files found under: ${path}`)
+    return unique.slice(0, 20)
+  }
+
+  private readJson(path: string): unknown {
+    try {
+      return JSON.parse(readFileSync(path, 'utf-8'))
+    } catch (error) {
+      throw new Error(`Could not parse JSON export "${basename(path)}": ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private extractConversationArray(raw: unknown, keys: string[]): Array<Record<string, unknown>> {
+    if (Array.isArray(raw)) return raw.filter(v => v && typeof v === 'object') as Array<Record<string, unknown>>
+    if (!raw || typeof raw !== 'object') return []
+    const obj = raw as Record<string, unknown>
+    for (const key of keys) {
+      const value = obj[key]
+      if (Array.isArray(value)) return value.filter(v => v && typeof v === 'object') as Array<Record<string, unknown>>
+    }
+    return [obj]
+  }
+
+  private asArray(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : []
+  }
+
+  private parseTimestamp(value: unknown): number {
+    if (typeof value === 'number') return value < 10_000_000_000 ? value * 1000 : value
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = new Date(value).getTime()
+      if (!Number.isNaN(parsed)) return parsed
+    }
+    return Date.now()
+  }
+
+  private extractChatGPTMessageContent(msg: Record<string, unknown>): string {
+    const content = msg['content'] as Record<string, unknown> | undefined
+    if (!content) return ''
+    const parts = Array.isArray(content['parts']) ? content['parts'] as unknown[] : []
+    const fromParts = parts.map(p => {
+      if (typeof p === 'string') return p
+      if (p && typeof p === 'object') {
+        const obj = p as Record<string, unknown>
+        return String(obj['text'] || obj['content'] || obj['name'] || '')
+      }
+      return ''
+    }).filter(Boolean).join('\n')
+    if (fromParts.trim()) return fromParts.trim()
+
+    if (typeof content['text'] === 'string') return content['text'].trim()
+    if (Array.isArray(content['result'])) return content['result'].map(String).join('\n').trim()
+    return ''
+  }
+
+  private resolveGitRepository(pathOrUrl: string, onStatus: StatusCallback | undefined, sourceId: string): string {
+    const isRemote = /^(https?:\/\/|git@)/i.test(pathOrUrl)
+    if (!isRemote) {
+      if (!existsSync(pathOrUrl)) throw new Error(`Repository path does not exist: ${pathOrUrl}`)
+      return pathOrUrl
+    }
+
+    const repoDir = join(app.getPath('userData'), 'repos')
+    mkdirSync(repoDir, { recursive: true })
+    const target = join(repoDir, this.stableId(pathOrUrl).replace(/-/g, ''))
+    onStatus?.({ sourceId, phase: 'parsing', progress: 0, total: 1,
+      message: existsSync(target) ? 'Updating remote GitHub repository...' : 'Cloning remote GitHub repository...',
+      startTime: Date.now() })
+
+    if (existsSync(join(target, '.git'))) {
+      execFileSync('git', ['fetch', '--all', '--prune'], { cwd: target, encoding: 'utf-8', timeout: 120000 })
+      execFileSync('git', ['pull', '--ff-only'], { cwd: target, encoding: 'utf-8', timeout: 120000 })
+    } else {
+      execFileSync('git', ['clone', '--depth=100', pathOrUrl, target], { encoding: 'utf-8', timeout: 180000 })
+    }
+    return target
   }
 
   private saveEntitiesBulk(nodes: MemoryNode[]): void {

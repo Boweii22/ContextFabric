@@ -13,9 +13,9 @@ import type { DataSource, ProcessingStatus } from '../../../../shared/types'
 
 const SOURCE_CONFIGS = {
   claude_export: { label: 'Claude Export', icon: MessageSquare, color: '#6366F1', desc: 'claude.ai → Settings → Privacy & Data → Export Data → JSON (instant download)' },
-  chatgpt_export: { label: 'ChatGPT Export', icon: MessageSquare, color: '#10A37F', desc: 'Settings → Data Controls → Export → email with zip. Takes days — use local folder as workaround' },
+  chatgpt_export: { label: 'ChatGPT Export', icon: MessageSquare, color: '#10A37F', desc: 'Settings -> Data Controls -> Export -> point to conversations.json or extracted export folder' },
   local_folder: { label: 'Local Folder', icon: Folder, color: '#F59E0B', desc: 'Point to any folder — indexes .md .txt .ts .js .py .go .json .yaml recursively' },
-  github_repo: { label: 'GitHub / Git Repo', icon: Github, color: '#6E40C9', desc: 'Point to a local git clone — indexes source files and docs (not commit history)' },
+  github_repo: { label: 'GitHub / Git Repo', icon: Github, color: '#6E40C9', desc: 'Point to a local clone or GitHub URL -> indexes files, docs, and commit history' },
   markdown: { label: 'Obsidian / Markdown', icon: FileText, color: '#06B6D4', desc: 'Point to your Obsidian vault folder — all .md files indexed recursively' },
   pdf: { label: 'PDF Document', icon: FileText, color: '#EF4444', desc: 'Single PDF file — text extracted and chunked for semantic search' },
   notion_export: { label: 'Notion Export', icon: BookOpen, color: '#E2E8F0', desc: 'Settings → Workspace → Export all workspace content → Markdown. Email delivery, may take hours' },
@@ -712,7 +712,7 @@ function AddSourceModal({ onClose, onAdd }: { onClose: () => void; onAdd: (data:
             {/* Path */}
             <div>
               <label className="text-xs font-medium text-slate-400 block mb-1.5">
-                {selectedType === 'claude_export' || selectedType === 'chatgpt_export' || selectedType === 'pdf' ? 'File Path' : 'Directory Path'}
+                {selectedType === 'claude_export' || selectedType === 'chatgpt_export' ? 'File or Folder Path' : selectedType === 'pdf' ? 'File Path' : 'Directory Path'}
               </label>
               <div className="flex gap-2">
                 <input
@@ -721,10 +721,10 @@ function AddSourceModal({ onClose, onAdd }: { onClose: () => void; onAdd: (data:
                   onChange={e => setPath(e.target.value)}
                   placeholder={
                     selectedType === 'claude_export' ? 'C:/Users/you/Downloads/claude_export.json' :
-                    selectedType === 'chatgpt_export' ? 'C:/Users/you/Downloads/chatgpt-export/conversations.json' :
+                    selectedType === 'chatgpt_export' ? 'C:/Users/you/Downloads/chatgpt-export or conversations.json' :
                     selectedType === 'markdown' ? 'C:/Users/you/Documents/MyObsidianVault' :
                     selectedType === 'notion_export' ? 'C:/Users/you/Downloads/notion-export-extracted' :
-                    selectedType === 'github_repo' ? 'C:/Users/you/code/my-repo' :
+                    selectedType === 'github_repo' ? 'C:/Users/you/code/my-repo or https://github.com/you/repo.git' :
                     selectedType === 'vscode_workspace' ? 'C:/Users/you/code/my-project' :
                     selectedType === 'pdf' ? 'C:/Users/you/Documents/notes.pdf' :
                     'C:/Users/you/path/to/folder'
@@ -751,7 +751,7 @@ function AddSourceModal({ onClose, onAdd }: { onClose: () => void; onAdd: (data:
               <div className="p-3 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs text-slate-400 space-y-1">
                 <p><strong className="text-amber-400">⚠ Official export takes days:</strong></p>
                 <p>ChatGPT → Settings → <strong className="text-white">Data Controls</strong> → <strong className="text-white">Export data</strong> → Confirm via email → OpenAI sends a second email with a download link. Can take <strong className="text-white">hours to several days</strong>.</p>
-                <p>Once you get the zip, extract it and point to <code className="text-cyan-400">conversations.json</code>.</p>
+                <p>Once you get the zip, extract it and point to the extracted folder or <code className="text-cyan-400">conversations.json</code>.</p>
                 <p className="text-slate-500 pt-1">Workaround: copy-paste important chats into .md files and use Local Folder instead.</p>
               </div>
             )}
@@ -776,9 +776,9 @@ function AddSourceModal({ onClose, onAdd }: { onClose: () => void; onAdd: (data:
 
             {selectedType === 'github_repo' && (
               <div className="p-3 rounded-xl bg-indigo-500/5 border border-indigo-500/15 text-xs text-slate-400 space-y-1">
-                <p><strong className="text-indigo-400">Use a local clone:</strong></p>
+                <p><strong className="text-indigo-400">Use a local clone or URL:</strong></p>
                 <p><code className="text-cyan-400">git clone https://github.com/you/repo</code></p>
-                <p>Then point to the cloned folder. Source files and docs are indexed — commit history is not.</p>
+                <p>Then point to the cloned folder, or paste the GitHub URL directly. Source files, docs, and commit history are indexed.</p>
               </div>
             )}
 
