@@ -39,6 +39,9 @@ export function getTypeColor(type: string): string {
     decision: '#F59E0B',
     entity: '#EF4444',
     project: '#EC4899',
+    style: '#14B8A6',
+    preference: '#84CC16',
+    person: '#F97316',
   }
   return colors[type] || '#6366F1'
 }

@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, GitBranch, Clock, MessageSquare, Database,
   Settings, Shield, ChevronLeft, ChevronRight, Sparkles,
-  Zap, Search, Bell, Sun, Moon, Bot
+  Zap, Search, Bell, Sun, Moon, Bot, HelpCircle
 } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { cn } from '../../lib/utils'
@@ -22,6 +22,7 @@ const NAV_ITEMS = [
 ] as const
 
 const BOTTOM_NAV = [
+  { path: '/help', icon: HelpCircle, label: 'Help' },
   { path: '/permissions', icon: Shield, label: 'Permissions' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ] as const

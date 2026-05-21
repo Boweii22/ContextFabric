@@ -13,6 +13,7 @@ import SourcesPage from './pages/Sources'
 import GemmaEvidencePage from './pages/GemmaEvidence'
 import SettingsPage from './pages/Settings'
 import PermissionsPage from './pages/Permissions'
+import HelpPage from './pages/Help'
 import type {
   DataSource, Stats, AppSettings, ProcessingStatus,
   Entity, TimelineEvent, AIQueryResult
@@ -110,6 +111,7 @@ export default function App(): React.ReactElement {
           <Route path="gemma" element={<GemmaEvidencePage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="permissions" element={<PermissionsPage />} />
+          <Route path="help" element={<HelpPage />} />
         </Route>
         <Route
           path="*"

@@ -1,4 +1,9 @@
 import axios, { AxiosInstance } from 'axios'
+import {
+  buildContextExtractionPrompt,
+  parseContextExtraction,
+  type ContextExtractionResult,
+} from '../../shared/contextExtraction'
 
 interface OllamaGenerateResponse {
   response: string
@@ -23,7 +28,7 @@ export class OllamaService {
   private enrichmentController: AbortController | null = null
   private constrainedModelReady = false
   private readonly constrainedModelName = 'cf-gemma4'
-  private readonly runtimeContext = 512
+  private readonly runtimeContext = 128
   private geminiApiKey = ''
   private geminiModel = 'gemma-3-27b-it'
 
@@ -62,7 +67,7 @@ export class OllamaService {
     this.ensureConstrainedModel().catch(() => {})
   }
 
-  // Creates a memory-limited Ollama model variant (num_ctx 1024) at startup.
+  // Creates a memory-limited Ollama model variant at startup.
   // This pre-allocates only ~100 MB of KV cache instead of several GB,
   // which is what causes "memory layout cannot be allocated" on 16 GB machines.
   async ensureConstrainedModel(): Promise<void> {
@@ -93,8 +98,8 @@ export class OllamaService {
           from: sourceModel,
           parameters: {
             num_ctx: this.runtimeContext,
-            num_predict: 192,
-            num_batch: 16,
+            num_predict: 64,
+            num_batch: 4,
           },
           stream: false,
         }),
@@ -147,7 +152,7 @@ export class OllamaService {
     return {
       num_ctx: this.runtimeContext,
       num_predict: numPredict,
-      num_batch: 16,
+      num_batch: 4,
     }
   }
 
@@ -643,6 +648,34 @@ JSON:`
       return aiHits.slice(0, 10)
     } catch {
       return regexHits
+    }
+  }
+
+  async extractContextNodes(text: string, inputType = 'unknown'): Promise<ContextExtractionResult> {
+    const prompt = buildContextExtractionPrompt(text, inputType)
+    const repairPrompt = (badOutput: string, errors: string[]) => `${prompt}
+
+The previous output was invalid for this schema.
+Errors:
+${errors.map(error => `- ${error}`).join('\n')}
+
+Previous output:
+${badOutput.slice(0, 1200)}
+
+Return corrected JSON only:`
+
+    try {
+      const first = await this.generate(prompt, 45000, this.enrichmentController?.signal, 360)
+      const parsed = parseContextExtraction(first)
+      if (parsed.ok) return parsed.result
+
+      const second = await this.generate(repairPrompt(first, parsed.errors), 45000, this.enrichmentController?.signal, 320)
+      const repaired = parseContextExtraction(second)
+      if (repaired.result.nodes.length > 0) return repaired.result
+      return { nodes: [] }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'enrichment_aborted') throw error
+      return { nodes: [] }
     }
   }
 

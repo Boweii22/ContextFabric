@@ -1,287 +1,229 @@
-# ContextFabric
+# ContextFabric Gemma 4
 
-**One Memory Across Every AI Tool**
+**A local-first AI memory layer powered by Gemma 4.**
 
-> Your personal AI context layer — a local-first memory operating system that unifies your conversations, notes, code, and decisions into searchable intelligence.
+ContextFabric gives your AI tools a shared, private memory graph. It imports real folders, repos, ChatGPT exports, Claude exports, notes, and documents, then uses local Gemma 4 through Ollama to extract useful context, reason over it, and answer with source citations.
 
----
+This project is built for the **DEV Gemma 4 Challenge: Build With Gemma 4**.
 
-## What It Solves
+## Why Gemma 4
 
-AI memory is fragmented. Claude remembers your Claude conversations. ChatGPT remembers its own. Your codebase, notes, and documents sit siloed. Every AI tool starts from scratch.
+ContextFabric needs a model that can run locally, read messy project context, and turn it into useful structured memory without sending private data to a cloud service.
 
-ContextFabric gives you **one unified memory graph** that any AI tool can query — running entirely on your machine.
+The default setup uses:
 
----
+- **Gemma 4 E2B via Ollama** as the preferred local edge reasoning model.
+- **Gemma 4 E4B** as a larger fallback if E2B is not available from your Ollama install yet.
+- **`cf-gemma4`** as a low-memory local profile created from the installed Gemma 4 source model.
+- **`nomic-embed-text`** for semantic embeddings.
 
-## Core Features
+Gemma 4 is used for real work:
 
-| Feature | Description |
-|---|---|
-| **Memory Graph** | Interactive knowledge graph of all your nodes, decisions, and relationships |
-| **AI Reasoning Search** | Ask natural-language questions; Gemma reasons across all sources with citations |
-| **Source Traceability** | Every answer shows exact source, file, timestamp, clickable navigation |
-| **Live Timeline** | How your decisions and architecture evolved over time |
-| **Context Injection API** | Local HTTP API (port 47821) for IDE plugins and other AI tools |
-| **Local-First Privacy** | Everything runs on your machine; zero cloud dependency |
+- answering natural-language questions over indexed memory
+- summarizing source chunks
+- extracting entities, tools, and project concepts
+- detecting technical decisions
+- creating context bundles that can be permission-served to other AI tools
 
----
+## Current Product Surface
 
-## Tech Stack
+- Desktop app built with Electron, React, TypeScript, and SQLite
+- Local data import screen for folders, repos, ChatGPT exports, Claude exports, markdown, PDFs, and Notion exports
+- AI Query page with streaming answers, citations, reasoning details, and history
+- Memory graph and timeline views
+- Permission request flow for external apps
+- Local HTTP context API on `127.0.0.1:47821`
+- Browser extension bridge for ChatGPT, Claude, Gemini, Perplexity, Cursor, and other AI sites
+- Encrypted-at-rest graph storage and secure local key handling
+- CR-SQLite-style local sync foundation
+- Gemma Evidence page that runs live checks against real indexed sources
 
-- **Desktop**: Electron 29 + React 18 + TypeScript
-- **UI**: TailwindCSS + Framer Motion + Radix UI + Lucide
-- **Graph**: @xyflow/react (React Flow v12)
-- **State**: Zustand
-- **Storage**: SQLite via better-sqlite3 (WAL mode, FTS5 full-text search)
-- **AI**: Ollama (local) — Gemma 3 12B recommended
-- **Embeddings**: nomic-embed-text via Ollama
-- **Backend API**: Express (local HTTP server on port 47821)
+## Requirements
 
----
+- Windows, macOS, or Linux
+- Node.js 20+
+- npm
+- Ollama from [ollama.com](https://ollama.com)
+- Enough free RAM to load your selected Gemma 4 model
 
-## Prerequisites
-
-### 1. Node.js
-Node.js 20+ required. [Download](https://nodejs.org)
-
-### 2. Ollama (for AI features)
-Install from [ollama.ai](https://ollama.ai), then pull the required models:
+## Install
 
 ```bash
-# Primary reasoning model (12B recommended, 8B works on 8GB RAM)
-ollama pull gemma4:e4b
+git clone https://github.com/Boweii22/ContextFabric.git
+cd ContextFabric
+npm install
+```
 
-# Embedding model (required for semantic search)
+## Install Gemma 4 Locally
+
+Install Ollama, then pull the models:
+
+```bash
+ollama pull gemma4:e2b
 ollama pull nomic-embed-text
 ```
 
-> ContextFabric works without Ollama using keyword-only search, but semantic reasoning requires it.
+If Ollama cannot pull `gemma4:e2b` on your machine yet, use the larger fallback:
 
-### 3. Windows: Build Tools (for better-sqlite3)
-If you see compilation errors on Windows, install build tools:
 ```bash
-npm install --global windows-build-tools
-# OR install "Desktop development with C++" in Visual Studio
+ollama pull gemma4:e4b
 ```
 
----
-
-## Installation & Development
+ContextFabric uses a low-memory profile called `cf-gemma4`. Create and verify it with:
 
 ```bash
-# Clone and install
-git clone https://github.com/yourname/contextfabric
-cd contextfabric
-npm install
+npm run verify:gemma
+```
 
-# Rebuild native modules for Electron
-npx electron-rebuild -f -w better-sqlite3
+Expected success:
 
-# Start development
+```text
+PASS Ollama is running
+PASS Gemma source model is installed
+PASS Constrained model profile exists
+PASS Gemma responded: ...
+Gemma verification passed.
+```
+
+If verification fails with a memory allocation error, close browsers/editors and rerun:
+
+```bash
+npm run verify:gemma
+```
+
+For very tight machines, lower the context window:
+
+```bash
+set CONTEXTFABRIC_GEMMA_NUM_CTX=128
+npm run verify:gemma
+```
+
+## Prove It Works Offline
+
+This is the privacy proof for the challenge submission:
+
+1. Start Ollama.
+2. Run `npm run verify:gemma` while online.
+3. Disconnect WiFi.
+4. Run the same command again:
+
+```bash
+npm run verify:gemma
+```
+
+If it passes offline, Gemma 4 is running locally with zero network egress for generation.
+
+## Run The App
+
+```bash
 npm run dev
 ```
 
-### Production Build
+First real test:
+
+1. Open **Sources**.
+2. Add a real project folder or GitHub repo.
+3. Click **Sync**.
+4. Open **Gemma Evidence**.
+5. Run **Project understanding**.
+6. Confirm the answer cites your real indexed sources.
+
+## Build And Verify
 
 ```bash
-npm run build      # Build all targets
-npm run package    # Build + package installer
+npm run build
+npm run e2e
+npm run verify:gemma
+node scripts/package-extension.mjs --validate
 ```
 
----
+## Environment
 
-## First Run
-
-1. **Onboarding** — 5-step wizard configures AI models and explains the concept
-2. **Add a Source** — Go to Sources → Add Source → select type (Claude export, local folder, etc.)
-3. **Sync** — Click the refresh icon; Gemma processes each chunk:
-   - Entity extraction
-   - Decision detection → Timeline events
-   - Embeddings generation
-   - Graph edge computation
-4. **Query** — Go to AI Query and ask anything: *"Why did I reject Supabase?"*
-
----
-
-## Supported Data Sources
-
-| Source | Format | Notes |
-|---|---|---|
-| Claude Export | `.json` | Settings → Export Data in Claude.ai |
-| ChatGPT Export | `conversations.json` | Settings → Data Controls → Export (**warning: takes days to arrive**) |
-| Local Folder | Directory | Indexes `.md .txt .ts .tsx .js .py .go .rs .json .yaml` |
-| GitHub Repo | Local clone | Treats as local folder |
-| Markdown File | `.md` | Single file or Obsidian vault root |
-| PDF | `.pdf` | Text extraction via pdf-parse |
-| Notion Export | Directory | Export as Markdown & CSV |
-| VSCode Workspace | Directory | Indexes project root |
-
----
-
-## Architecture
-
-```
-ContextFabric/
-├── src/
-│   ├── main/                  # Electron main process (Node.js)
-│   │   ├── index.ts           # App entry, BrowserWindow
-│   │   ├── ipc/               # IPC handlers (bridges renderer↔main)
-│   │   ├── services/
-│   │   │   ├── database.ts    # SQLite (nodes, edges, embeddings, FTS)
-│   │   │   ├── ollama.ts      # Ollama REST client (generate, embed, extract)
-│   │   │   ├── ingestion.ts   # File parsing, chunking, enrichment pipeline
-│   │   │   └── search.ts      # Hybrid semantic + keyword search
-│   │   └── api/
-│   │       └── server.ts      # Express HTTP API on :47821
-│   ├── preload/
-│   │   └── index.ts           # contextBridge — exposes window.api to renderer
-│   ├── renderer/              # React frontend
-│   │   └── src/
-│   │       ├── App.tsx        # Router + global data loading
-│   │       ├── store/         # Zustand global state
-│   │       ├── pages/         # 8 full-screen pages
-│   │       ├── components/    # Shared layout components
-│   │       └── lib/           # Utilities + API wrapper
-│   └── shared/
-│       └── types.ts           # Shared TypeScript types (main + renderer)
-```
-
-### Data Flow
-
-```
-File / Export
-     │
-     ▼
-IngestionService.ingestSource()
-  ├── Parse (Claude JSON / folder walk / PDF)
-  ├── Chunk (2000 char paragraphs with overlap)
-  ├── Ollama: extractEntities() → Entity table
-  ├── Ollama: extractDecision() → Timeline events
-  ├── Ollama: summarize() → node.summary
-  ├── Ollama: embed() → Float32 vector in SQLite BLOB
-  └── buildGraphEdges() → cosine similarity > 0.75
-
-                    │
-                    ▼
-            SQLite (WAL mode)
-     ┌─────────────────────────────┐
-     │ memory_nodes (FTS5 indexed) │
-     │ memory_embeddings (BLOB)    │
-     │ memory_edges                │
-     │ entities                    │
-     │ timeline_events             │
-     └─────────────────────────────┘
-                    │
-                    ▼
-         SearchService.hybridSearch()
-           ├── Semantic: cosine similarity over all embeddings
-           └── Keyword: FTS5 BM25 ranking
-                    │
-                    ▼
-         OllamaService.queryWithContext()
-           └── Gemma 3 reasons over top-12 chunks → Answer + Citations
-```
-
----
-
-## Local Context API
-
-Other tools query your memory via the local HTTP API:
+Optional runtime overrides are documented in `.env.example`.
 
 ```bash
-# Check status
-curl http://localhost:47821/health
-
-# Query your context
-curl -X POST http://localhost:47821/api/context \
-  -H "Content-Type: application/json" \
-  -d '{"query": "auth system architecture", "limit": 5}'
-
-# Response
-{
-  "query": "auth system architecture",
-  "results": [
-    {
-      "content": "...",
-      "source": "My Claude Conversations",
-      "title": "Auth Discussion — Session Tokens",
-      "timestamp": 1703123456000,
-      "score": 0.87
-    }
-  ]
-}
+CONTEXTFABRIC_OLLAMA_URL=http://127.0.0.1:11434
+CONTEXTFABRIC_OLLAMA_MODEL=cf-gemma4
+CONTEXTFABRIC_GEMMA_SOURCE_MODEL=gemma4:e2b
+CONTEXTFABRIC_GEMMA_NUM_CTX=128
+CONTEXTFABRIC_GEMMA_NUM_PREDICT=32
+CONTEXTFABRIC_GEMMA_NUM_BATCH=4
 ```
 
-### VSCode Extension Integration
+## Local API
 
-Add to your `.vscode/settings.json` or AI assistant config:
-```json
-{
-  "contextfabric.apiUrl": "http://localhost:47821",
-  "contextfabric.enabled": true
-}
+ContextFabric starts a local-only API on `127.0.0.1:47821`.
+
+Request app permission:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:47821/api/permission/request" `
+  -Headers @{ "X-ContextFabric-App" = "judge-demo" } `
+  -ContentType "application/json" `
+  -Body '{"scopes":["context"],"reason":"Judge wants to inspect local Gemma memory context"}'
 ```
 
----
+After approving in the app, request a token:
 
-## Demo Scenarios
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:47821/api/token" `
+  -Headers @{ "X-ContextFabric-App" = "judge-demo" } `
+  -ContentType "application/json" `
+  -Body '{"query":"current project context and technical decisions","ttlSeconds":3600}'
+```
 
-### "Why did I stop using Firebase?"
+## Browser Extension
 
-ContextFabric reconstructs:
-- Conversations where Firebase was discussed
-- The alternative (e.g., Supabase/PlanetScale) that won
-- Code commits or notes referencing the decision
-- Timeline of when the switch happened
-- Exact quotes with source citations
+Package the extension:
 
-### "Summarize everything about my auth architecture"
+```bash
+npm run extension:package
+```
 
-Returns:
-- All conversations touching auth
-- Architecture decisions extracted to Timeline
-- Entity graph showing auth-related concepts
-- Evolution from first mention to current state
+Load unpacked from:
 
----
+```text
+browser-extension/
+```
 
-## Privacy
+or package output:
 
-- **Zero cloud**: All data stays on your machine
-- **Local inference**: Gemma runs via Ollama on your hardware
-- **SQLite storage**: `~/.config/ContextFabric/data/contextfabric.db`
-- **No telemetry** by default (opt-in only)
-- **Source permissions**: Per-source access controls for the local API
+```text
+dist/browser-extension/contextfabric-bridge-0.1.0
+```
 
----
+## Challenge Narrative
+
+ContextFabric is not another chatbot. It is local AI memory infrastructure:
+
+1. Gemma 4 reads your real project material locally.
+2. ContextFabric stores the extracted memory as a structured graph.
+3. You grant apps scoped access through local permission tokens.
+4. Any AI tool can start with relevant context without that context living in a vendor silo.
+
+The challenge value is the combination of:
+
+- local Gemma 4 reasoning
+- private personal context graph
+- source-cited answers
+- permissioned context portability
+- browser extension bridge for existing AI tools
 
 ## Troubleshooting
 
-| Problem | Solution |
+| Problem | Fix |
 |---|---|
-| Ollama not connecting | Make sure Ollama is running: `ollama serve` |
-| No models available | Pull models: `ollama pull gemma4:e4b nomic-embed-text` |
-| Slow indexing | Use smaller model: `ollama pull gemma4:e4b` |
-| SQLite compile error | Run `npx electron-rebuild -f -w better-sqlite3` |
-| FTS search errors | Avoid special characters in queries |
-| Graph not rendering | Refresh after indexing completes |
-
----
-
-## Roadmap
-
-- [ ] Obsidian plugin
-- [ ] VSCode extension (native)
-- [ ] Claude MCP server integration
-- [ ] Automatic background sync (file watcher)
-- [ ] Memory compression / summarization clusters
-- [ ] Conflict detection (contradictory decisions)
-- [ ] Export to markdown / PDF
-- [ ] Multi-user / team context (local network)
-
----
+| Ollama not reachable | Start Ollama, then run `npm run verify:gemma` |
+| `gemma4:e2b` missing | Run `ollama pull gemma4:e2b`. If Ollama rejects that tag, run `ollama pull gemma4:e4b` as the larger fallback. |
+| `memory layout cannot be allocated` | Close heavy apps, run `npm run verify:gemma`, or set `CONTEXTFABRIC_GEMMA_NUM_CTX=128` |
+| Embeddings missing | Run `ollama pull nomic-embed-text` |
+| No good answers | Sync a real source first, then use Gemma Evidence |
+| Browser extension cannot inject | Approve the permission request in ContextFabric Permissions |
 
 ## License
 
-MIT © ContextFabric
+MIT

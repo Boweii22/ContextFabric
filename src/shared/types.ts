@@ -2,7 +2,7 @@ export interface MemoryNode {
   id: string
   title: string
   content: string
-  type: 'conversation' | 'document' | 'code' | 'note' | 'decision' | 'entity' | 'project'
+  type: 'conversation' | 'document' | 'code' | 'note' | 'decision' | 'entity' | 'project' | 'style' | 'preference' | 'person'
   sourceId: string
   sourceName: string
   sourceType: string

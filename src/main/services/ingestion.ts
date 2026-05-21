@@ -8,6 +8,7 @@ import { app } from 'electron'
 import type { DatabaseService } from './database'
 import type { OllamaService } from './ollama'
 import type { MemoryNode, MemoryEdge, DataSource, Entity, ProcessingStatus } from '../../shared/types'
+import type { ExtractedContextNode } from '../../shared/contextExtraction'
 
 type StatusCallback = (status: ProcessingStatus) => void
 
@@ -606,12 +607,15 @@ export class IngestionService {
       node.entities = this.ollama.simpleEntityExtract(node.content).map(e => e.name)
     }
 
+    const deterministicProfileNodes = this.buildDeterministicProfileNodes(capped, source)
+    const savedNodes = [...capped, ...deterministicProfileNodes]
+
     // 2. Bulk save all nodes + fast hash embeddings in one transaction pass
-    this.db.batchUpsertNodes(capped)
-    this.saveEntitiesBulk(capped)
+    this.db.batchUpsertNodes(savedNodes)
+    this.saveEntitiesBulk(savedNodes)
 
     // 3. Fast hash embeddings — all in a single DB transaction, zero HTTP calls
-    const embItems = capped.map(node => ({
+    const embItems = savedNodes.map(node => ({
       nodeId: node.id,
       embedding: this.ollama.fastEmbed(
         `${node.title} ${node.entities.join(' ')} ${node.content.substring(0, 600)}`
@@ -626,6 +630,7 @@ export class IngestionService {
 
     // 4. Build graph edges — entity co-occurrence, file structure, code deps
     this.buildRelationships(capped)
+    this.linkDeterministicProfileNodes(deterministicProfileNodes)
 
     // 5. Queue ALL nodes for background Gemma enrichment + real embed upgrade
     for (const node of capped) {
@@ -637,6 +642,139 @@ export class IngestionService {
   }
 
   // ─── Edge / relationship building ──────────────────────────────────────────
+
+  private buildDeterministicProfileNodes(nodes: MemoryNode[], source: DataSource): MemoryNode[] {
+    const profileNodes: MemoryNode[] = []
+    const highSignalDocs = nodes.filter(node => this.isHighSignalProfileSource(node)).slice(0, 12)
+
+    for (const node of highSignalDocs) {
+      const text = `${node.title}\n${node.content}`.slice(0, 5000)
+      const projectTitle = this.extractProjectName(text, source)
+      if (projectTitle) {
+        profileNodes.push(this.makeProfileNode(node, source, 'project', projectTitle, this.extractProjectSummary(text, projectTitle), 0.78, 'deterministic-profile'))
+      }
+      for (const decision of this.extractDeterministicDecisions(text).slice(0, 3)) {
+        profileNodes.push(this.makeProfileNode(node, source, 'decision', decision.title, decision.summary, decision.confidence, 'deterministic-profile'))
+      }
+      for (const preference of this.extractDeterministicPreferences(text).slice(0, 3)) {
+        profileNodes.push(this.makeProfileNode(node, source, preference.type, preference.title, preference.summary, preference.confidence, 'deterministic-profile'))
+      }
+    }
+
+    const unique = new Map<string, MemoryNode>()
+    for (const node of profileNodes) unique.set(`${node.type}:${node.title.toLowerCase()}:${node.summary?.toLowerCase()}`, node)
+    return [...unique.values()].slice(0, 20)
+  }
+
+  private isHighSignalProfileSource(node: MemoryNode): boolean {
+    if (node.type === 'conversation') return false
+    const title = node.title.toLowerCase()
+    const path = String((node.metadata as Record<string, unknown>).path || '').toLowerCase().replace(/\\/g, '/')
+    if (/\bmanifest\.json$/.test(path) || /browser-extension\/.*\.(js|json)$/.test(path)) return false
+    const text = `${node.title}\n${node.content.slice(0, 2500)}`.toLowerCase()
+    return /\b(readme|writeup|prompts|architecture|decision|adr|notes|overview)\b/.test(title) ||
+      /\b(contextfabric is|contextfabric gives|local-first|privacy-preserving|memory graph|permission protocol|gemma 4 challenge)\b/.test(text)
+  }
+
+  private makeProfileNode(sourceNode: MemoryNode, source: DataSource, type: ExtractedContextNode['type'], title: string, summary: string, confidence: number, extractor: string): MemoryNode {
+    const cleanedSummary = this.cleanProfileFact(summary)
+    return {
+      id: this.stableId(sourceNode.id, type, title.toLowerCase(), extractor),
+      title,
+      content: cleanedSummary,
+      type,
+      sourceId: source.id,
+      sourceName: source.name,
+      sourceType: source.type,
+      timestamp: sourceNode.timestamp,
+      tags: [type, extractor],
+      entities: [...new Set([...sourceNode.entities, ...this.ollama.simpleEntityExtract(summary).map(e => e.name)])].slice(0, 10),
+      summary: cleanedSummary,
+      metadata: { confidence, extractedFromNodeId: sourceNode.id, extractionSchema: 'contextfabric.extraction.v1', extractor },
+    }
+  }
+
+  private linkDeterministicProfileNodes(nodes: MemoryNode[]): void {
+    for (const node of nodes) {
+      const parentId = String(node.metadata.extractedFromNodeId || '')
+      if (!parentId) continue
+      this.db.upsertEdge({
+        id: this.stableId(parentId, node.id, 'deterministic-profile'),
+        source: parentId,
+        target: node.id,
+        type: 'extends',
+        weight: Number(node.metadata.confidence || 0.7),
+        label: `Extracted ${node.type}`,
+        metadata: { extractor: node.metadata.extractor || 'deterministic-profile' },
+      })
+    }
+  }
+
+  private extractProjectName(text: string, source: DataSource): string | null {
+    const heading = text.match(/^#\s+(.+?)(?:\s+[-—]\s+|\n|$)/m)?.[1]?.trim()
+    if (heading && heading.length < 80) return heading
+    const named = text.match(/\b(ContextFabric|TrialMatch|[A-Z][A-Za-z0-9]+(?:Fabric|Match|AI|OS))\b/)?.[1]
+    return named || (source.type === 'github_repo' || source.type === 'local_folder' || source.type === 'vscode_workspace' ? source.name : null)
+  }
+
+  private extractProjectSummary(text: string, projectTitle: string): string {
+    const sentences = text.replace(/```[\s\S]*?```/g, ' ').split(/(?<=[.!?])\s+|\n+/)
+      .map(sentence => this.cleanProfileFact(sentence.replace(/[#>*_`[\]]/g, '')))
+      .filter(sentence => sentence.length > 45 && sentence.length < 260)
+      .filter(sentence => this.isUsefulProfileFact(sentence))
+      .filter(sentence => !this.looksLikeConfigFact(sentence))
+    const best = sentences.find(sentence => /\b(local-first|privacy|memory|Gemma|AI|project|app|tool|protocol|extension|graph)\b/i.test(sentence))
+    return best || `${projectTitle} is an indexed project in ContextFabric.`
+  }
+
+  private extractDeterministicDecisions(text: string): Array<{ title: string; summary: string; confidence: number }> {
+    return text.split(/\n+/).map(line => line.trim()).filter(Boolean)
+      .filter(line => /\b(decision|decided|chose|choose|uses|switched|rejected|instead of|because|local-first|encrypted|permission)\b/i.test(line))
+      .filter(line => this.isUsefulProfileFact(line))
+      .filter(line => !this.looksLikeConfigFact(line))
+      .map(line => {
+        const cleaned = this.cleanProfileFact(line.replace(/^[-*#\s]+/, '')).slice(0, 220)
+        const title = cleaned.replace(/^Decision:\s*/i, '').split(/[.:;]/)[0].slice(0, 80) || 'Project decision'
+        return { title, summary: cleaned, confidence: /\b(decision|decided|chose|because)\b/i.test(line) ? 0.82 : 0.66 }
+      })
+  }
+
+  private extractDeterministicPreferences(text: string): Array<{ type: 'style' | 'preference'; title: string; summary: string; confidence: number }> {
+    return text.split(/\n+/).map(line => line.trim()).filter(Boolean)
+      .filter(line => /\b(preference|prefer|style|writing style|tone|privacy|local|offline|avoid|source-cited|concise|practical)\b/i.test(line))
+      .filter(line => this.isUsefulProfileFact(line))
+      .filter(line => !this.looksLikeConfigFact(line))
+      .map(line => {
+        const cleaned = this.cleanProfileFact(line.replace(/^[-*#\s]+/, '')).slice(0, 220)
+        const isStyle = /\b(style|tone|writing|concise|practical|source-cited)\b/i.test(cleaned)
+        return { type: isStyle ? 'style' : 'preference', title: isStyle ? 'Working style' : 'Project preference', summary: cleaned, confidence: /\b(preference|prefer|style)\b/i.test(line) ? 0.82 : 0.64 }
+      })
+  }
+
+  private cleanProfileFact(text: string): string {
+    return text
+      .replace(/\b(defaultQuery|DEFAULT_QUERY|query)\s*:\s*['"][^'"]+['"],?/gi, '')
+      .replace(/^["']?(description|name|version|default_title|title)["']?\s*:\s*["']?/i, '')
+      .replace(/["'],?\s*$/g, '')
+      .replace(/\b(current project context, writing style, technical decisions, preferences)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  private isUsefulProfileFact(text: string): boolean {
+    const cleaned = this.cleanProfileFact(text)
+    if (cleaned.length < 45) return false
+    if (/\b(defaultQuery|DEFAULT_QUERY|placeholder|data-default-query|document\.querySelector|const\s+DEFAULT|settings\.defaultQuery)\b/i.test(text)) return false
+    if (this.looksLikeConfigFact(text)) return false
+    if (/^[A-Za-z0-9_$]+\s*:\s*['"`]/.test(text.trim())) return false
+    return /\b(ContextFabric|Gemma|local-first|privacy|memory|graph|permission|extension|Ollama|sync|source|assistant|project|decision|preference|style)\b/i.test(cleaned)
+  }
+
+  private looksLikeConfigFact(text: string): boolean {
+    const trimmed = text.trim()
+    return /^["']?[a-zA-Z0-9_$-]+["']?\s*:\s*["']/.test(trimmed) ||
+      /^\{?\s*["']?(name|description|version|manifest_version|permissions|content_scripts|default_query)["']?\s*:/.test(trimmed)
+  }
 
   private buildRelationships(nodes: MemoryNode[]): void {
     const edges: MemoryEdge[] = []
@@ -790,10 +928,64 @@ export class IngestionService {
       try { node.summary = await this.withTimeout(this.ollama.summarize(node.content, 150)) } catch { /* skip */ }
     }
 
-    // Decision extraction for non-code content
+    // Unified Gemma extraction: project, style, decision, preference, person.
+    try {
+      const extraction = await this.withTimeout(
+        this.ollama.extractContextNodes(node.content, this.inferInputType(node)),
+        45000
+      )
+
+      if (extraction.nodes.length > 0) {
+        const derivedNodes = extraction.nodes.map((extracted, index) =>
+          this.makeExtractedNode(node, source, extracted, index)
+        )
+
+        this.db.batchUpsertNodes(derivedNodes)
+        this.saveEntitiesBulk(derivedNodes)
+
+        for (const derived of derivedNodes) {
+          this.db.upsertEdge({
+            id: this.stableId(node.id, derived.id, 'extracted-context'),
+            source: node.id,
+            target: derived.id,
+            type: 'extends',
+            weight: Number((derived.metadata.confidence as number | undefined) || 0.75),
+            label: `Gemma extracted ${derived.type}`,
+            metadata: { extractor: 'gemma4', sourceNodeId: node.id },
+          })
+
+          const text = [derived.title, derived.summary || '', derived.entities.join(', '), derived.content].join('\n')
+          const emb = await this.ollama.embed(text)
+          if (emb.length > 0) this.db.saveEmbedding(derived.id, emb, embeddingModel)
+        }
+      }
+
+      node.metadata = {
+        ...node.metadata,
+        extraction: {
+          model: this.db.getAllSettings().ollamaModel || 'cf-gemma4',
+          schema: 'contextfabric.extraction.v1',
+          nodeCount: extraction.nodes.length,
+          updatedAt: Date.now(),
+        },
+      }
+    } catch { /* skip */ }
+
+    // Decision timeline extraction for non-code content. Prefer the unified
+    // extracted decision node, then fall back to the older targeted prompt.
     if (node.type !== 'code') {
       try {
-        const decision = await this.withTimeout(this.ollama.extractDecision(node.content))
+        const extractedDecision = this.findExtractedDecision(node.id)
+        const decision = extractedDecision
+          ? {
+              isDecision: true,
+              decision: extractedDecision.title,
+              reasoning: String(extractedDecision.metadata.reasoning || extractedDecision.summary || ''),
+              alternatives: Array.isArray(extractedDecision.metadata.alternatives)
+                ? extractedDecision.metadata.alternatives as string[]
+                : [],
+            }
+          : await this.withTimeout(this.ollama.extractDecision(node.content))
         if (decision.isDecision && decision.decision) {
           const eventId = uuidv4()
           this.db.upsertTimelineEvent({
@@ -835,6 +1027,58 @@ export class IngestionService {
       const emb = await this.ollama.embed(text)
       if (emb.length > 0) this.db.saveEmbedding(node.id, emb, embeddingModel)
     } catch { /* skip */ }
+  }
+
+  private findExtractedDecision(sourceNodeId: string): MemoryNode | null {
+    const edges = this.db.getEdgesForNode(sourceNodeId)
+    for (const edge of edges) {
+      if (edge.source !== sourceNodeId || edge.type !== 'extends') continue
+      const node = this.db.getNode(edge.target)
+      if (node?.type === 'decision') return node
+    }
+    return null
+  }
+
+  private makeExtractedNode(
+    sourceNode: MemoryNode,
+    source: DataSource,
+    extracted: ExtractedContextNode,
+    index: number
+  ): MemoryNode {
+    const id = this.stableId(sourceNode.id, extracted.type, extracted.title.toLowerCase(), String(index))
+    return {
+      id,
+      title: extracted.title,
+      content: [
+        extracted.summary,
+        `Evidence: ${extracted.evidence}`,
+        extracted.metadata.reasoning ? `Reasoning: ${extracted.metadata.reasoning}` : '',
+      ].filter(Boolean).join('\n'),
+      type: extracted.type,
+      sourceId: source.id,
+      sourceName: source.name,
+      sourceType: source.type,
+      timestamp: sourceNode.timestamp,
+      tags: [...new Set([extracted.type, ...extracted.tags])].slice(0, 10),
+      entities: extracted.entities,
+      summary: extracted.summary,
+      metadata: {
+        ...extracted.metadata,
+        confidence: extracted.confidence,
+        evidence: extracted.evidence,
+        extractedFromNodeId: sourceNode.id,
+        extractionSchema: 'contextfabric.extraction.v1',
+        extractor: 'gemma4',
+      },
+    }
+  }
+
+  private inferInputType(node: MemoryNode): string {
+    if (node.type === 'conversation') return 'conversation'
+    if (node.type === 'code') return /\/\/|\/\*|#/.test(node.content) ? 'code_comments' : 'code'
+    if (/^\s*[-*]\s+/m.test(node.content)) return 'bullet_points'
+    if (node.type === 'note') return 'notes'
+    return 'prose'
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────

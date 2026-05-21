@@ -1,5 +1,5 @@
 {
-  "name": "context-fabric",
+  "name": "contextfabric-gemma4",
   "version": "1.0.0",
   "description": "One Memory Across Every AI Tool - Your local AI memory operating system",
   "main": "./out/main/index.js",
@@ -14,7 +14,10 @@
     "release:local": "node scripts/release-local.mjs",
     "e2e": "node scripts/e2e-check.mjs",
     "ui:e2e": "node scripts/ui-flow-check.mjs",
+    "test:extraction": "node scripts/test-extraction-parser.mjs",
+    "benchmark:extraction": "node scripts/benchmark-extraction.mjs",
     "assets:brand": "node scripts/generate-brand-assets.mjs",
+    "verify:gemma": "node scripts/verify-gemma.mjs",
     "extension:validate": "node scripts/package-extension.mjs --validate",
     "extension:package": "node scripts/package-extension.mjs",
     "postinstall": "electron-builder install-app-deps"
