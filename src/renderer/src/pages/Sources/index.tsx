@@ -196,8 +196,25 @@ export default function SourcesPage(): React.ReactElement {
             <div className="w-20 h-20 rounded-3xl bg-indigo-500/10 flex items-center justify-center mx-auto mb-4">
               <Database className="w-10 h-10 text-indigo-400" />
             </div>
-            <h3 className="text-lg font-semibold text-white mb-2">No sources connected</h3>
-            <p className="text-sm text-slate-500 mb-6">Connect your first data source to start building your unified memory.</p>
+            <h3 className="text-lg font-semibold text-white mb-2">Start by adding one thing</h3>
+            <p className="text-sm text-slate-500 mb-6 max-w-md mx-auto">
+              Pick the easiest source first. A project folder is usually the fastest way to test ContextFabric.
+            </p>
+            <div className="grid grid-cols-3 gap-3 max-w-2xl mx-auto mb-7 text-left">
+              {[
+                { icon: Folder, title: 'Project folder', text: 'Best first test. Point to this app or any notes folder.' },
+                { icon: MessageSquare, title: 'Chat export', text: 'Use conversations.json from ChatGPT or Claude.' },
+                { icon: Github, title: 'Git repo', text: 'Use a local repo folder or a GitHub URL.' },
+              ].map(item => (
+                <div key={item.title} className="p-4 rounded-2xl bg-cosmos-800 border border-white/[0.06]">
+                  <div className="w-9 h-9 rounded-xl bg-indigo-500/15 flex items-center justify-center mb-3">
+                    <item.icon className="w-4 h-4 text-indigo-300" />
+                  </div>
+                  <div className="text-sm font-semibold text-white">{item.title}</div>
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">{item.text}</p>
+                </div>
+              ))}
+            </div>
             <button
               onClick={() => setShowAddModal(true)}
               className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2.5 rounded-xl transition-all shadow-glow"

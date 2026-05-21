@@ -11,6 +11,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "npm run build && electron-builder",
+    "release:local": "node scripts/release-local.mjs",
+    "e2e": "node scripts/e2e-check.mjs",
     "extension:validate": "node scripts/package-extension.mjs --validate",
     "extension:package": "node scripts/package-extension.mjs",
     "postinstall": "electron-builder install-app-deps"
@@ -71,6 +73,7 @@
   "build": {
     "appId": "ai.contextfabric.app",
     "productName": "ContextFabric",
+    "npmRebuild": false,
     "directories": {
       "output": "dist"
     },
@@ -79,6 +82,7 @@
       "resources/**/*"
     ],
     "win": {
+      "signAndEditExecutable": false,
       "target": "nsis"
     },
     "mac": {
