@@ -13,6 +13,8 @@
     "package": "npm run build && electron-builder",
     "release:local": "node scripts/release-local.mjs",
     "e2e": "node scripts/e2e-check.mjs",
+    "ui:e2e": "node scripts/ui-flow-check.mjs",
+    "assets:brand": "node scripts/generate-brand-assets.mjs",
     "extension:validate": "node scripts/package-extension.mjs --validate",
     "extension:package": "node scripts/package-extension.mjs",
     "postinstall": "electron-builder install-app-deps"
@@ -73,6 +75,7 @@
   "build": {
     "appId": "ai.contextfabric.app",
     "productName": "ContextFabric",
+    "icon": "resources/icon.ico",
     "npmRebuild": false,
     "directories": {
       "output": "dist"

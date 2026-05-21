@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 180" role="img" aria-labelledby="title">
+  <title id="title">ContextFabric wordmark</title>
+  <rect width="820" height="180" rx="32" fill="#070A18"/>
+  <image href="../icon.svg" x="36" y="38" width="104" height="104"/>
+  <text x="164" y="94" fill="#F8FAFC" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="46" font-weight="750">ContextFabric</text>
+  <text x="167" y="128" fill="#94A3B8" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18">Private AI memory for local-first workflows</text>
+</svg>

@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, GitBranch, Clock, MessageSquare, Database,
   Settings, Shield, ChevronLeft, ChevronRight, Sparkles,
-  Zap, Search, Bell, Sun, Moon
+  Zap, Search, Bell, Sun, Moon, Bot
 } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { cn } from '../../lib/utils'
@@ -18,6 +18,7 @@ const NAV_ITEMS = [
   { path: '/timeline', icon: Clock, label: 'Timeline', shortcut: '3' },
   { path: '/query', icon: MessageSquare, label: 'AI Query', shortcut: '4' },
   { path: '/sources', icon: Database, label: 'Sources', shortcut: '5' },
+  { path: '/gemma', icon: Bot, label: 'Gemma Evidence', shortcut: '6' },
 ] as const
 
 const BOTTOM_NAV = [

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 720" role="img" aria-labelledby="title">
+  <title id="title">ContextFabric release banner</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0F172A"/>
+      <stop offset=".45" stop-color="#312E81"/>
+      <stop offset="1" stop-color="#083344"/>
+    </linearGradient>
+  </defs>
+  <rect width="1400" height="720" fill="url(#g)"/>
+  <g opacity=".16" stroke="#FFFFFF">
+    <path d="M0 160H1400M0 300H1400M0 440H1400M0 580H1400M180 0V720M360 0V720M540 0V720M720 0V720M900 0V720M1080 0V720M1260 0V720"/>
+  </g>
+  <circle cx="1060" cy="330" r="176" fill="#22D3EE" opacity=".14"/>
+  <circle cx="1110" cy="384" r="112" fill="#A855F7" opacity=".18"/>
+  <image href="../icon.svg" x="112" y="118" width="154" height="154"/>
+  <text x="112" y="338" fill="#FFFFFF" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="78" font-weight="800">ContextFabric</text>
+  <text x="118" y="398" fill="#CBD5E1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30">Private AI memory. Local by default. Permissioned by design.</text>
+  <rect x="116" y="468" width="244" height="52" rx="26" fill="#67E8F9"/>
+  <text x="148" y="502" fill="#020617" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="700">Local-first beta</text>
+</svg>

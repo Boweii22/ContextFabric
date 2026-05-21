@@ -10,6 +10,7 @@ import MemoryGraphPage from './pages/MemoryGraph'
 import TimelinePage from './pages/Timeline'
 import QueryPage from './pages/Query'
 import SourcesPage from './pages/Sources'
+import GemmaEvidencePage from './pages/GemmaEvidence'
 import SettingsPage from './pages/Settings'
 import PermissionsPage from './pages/Permissions'
 import type {
@@ -106,6 +107,7 @@ export default function App(): React.ReactElement {
           <Route path="timeline" element={<TimelinePage />} />
           <Route path="query" element={<QueryPage />} />
           <Route path="sources" element={<SourcesPage />} />
+          <Route path="gemma" element={<GemmaEvidencePage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="permissions" element={<PermissionsPage />} />
         </Route>
