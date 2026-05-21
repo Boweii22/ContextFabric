@@ -24,6 +24,12 @@ const api = {
       ipcRenderer.invoke('memory:get-stats'),
     getHistory: (limit?: number) =>
       ipcRenderer.invoke('memory:get-history', limit),
+    deleted: (limit?: number) =>
+      ipcRenderer.invoke('memory:deleted', limit),
+    restoreNode: (id: string) =>
+      ipcRenderer.invoke('memory:restore-node', id),
+    purgeExpired: () =>
+      ipcRenderer.invoke('memory:purge-expired'),
   },
 
   // Sources

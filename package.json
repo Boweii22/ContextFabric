@@ -16,6 +16,7 @@
     "ui:e2e": "node scripts/ui-flow-check.mjs",
     "test:extraction": "node scripts/test-extraction-parser.mjs",
     "test:conflicts": "node scripts/test-conflict-detection.mjs",
+    "test:memory": "node scripts/test-memory-store.mjs",
     "benchmark:extraction": "node scripts/benchmark-extraction.mjs",
     "assets:brand": "node scripts/generate-brand-assets.mjs",
     "verify:gemma": "node scripts/verify-gemma.mjs",

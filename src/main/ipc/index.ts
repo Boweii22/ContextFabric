@@ -198,6 +198,10 @@ export function registerIpcHandlers(
     return db.getNode(id)
   })
 
+  ipcMain.handle('memory:deleted', async (_, limit = 100) => db.getDeletedNodes(limit))
+  ipcMain.handle('memory:restore-node', async (_, id: string) => db.restoreNode(id))
+  ipcMain.handle('memory:purge-expired', async () => db.purgeExpiredDeletedNodes(30))
+
   ipcMain.handle('memory:get-graph', async () => {
     const nodes = db.getNodes(500)
     const edges = db.getAllEdges()

@@ -34,7 +34,7 @@ import type {
 //   The sync_changes table maps directly to crsql_changes format
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 7
+const SCHEMA_VERSION = 8
 const CRR_TABLES = ['memory_nodes', 'memory_edges', 'data_sources', 'entities', 'timeline_events', 'query_history']
 
 export class DatabaseService {
@@ -145,6 +145,7 @@ export class DatabaseService {
     this.migrateSecureSecretsAndEncryptedGraph()
     this.resetStuckSources()
     this.resetSessionGrants()
+    this.purgeExpiredDeletedNodes(30)
   }
 
   // Any source left as 'indexing' from a previous crashed/killed sync
@@ -441,6 +442,18 @@ export class DatabaseService {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_conflicts_pair ON memory_conflicts(existing_node_id, new_node_id);
       `)
       this.setSchemaVersion(7)
+    }
+
+    if (currentVersion < 8) {
+      try {
+        this.db.exec(`ALTER TABLE memory_nodes ADD COLUMN confidence REAL NOT NULL DEFAULT 0;`)
+      } catch {
+        // Column already exists on some dev databases.
+      }
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_nodes_deleted_at ON memory_nodes(deleted_at);
+      `)
+      this.setSchemaVersion(8)
     }
 
     this.initializeDefaultSettings()
@@ -964,12 +977,13 @@ export class DatabaseService {
     this.db.prepare(`
       INSERT OR REPLACE INTO memory_nodes
         (id, title, content, type, source_id, source_name, source_type,
-         timestamp, tags, entities, summary, metadata, site_id, version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         timestamp, confidence, tags, entities, summary, metadata, site_id, version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       node.id, this.encrypt(node.title), this.encrypt(node.content), node.type,
       node.sourceId, this.encrypt(node.sourceName), node.sourceType,
-      node.timestamp, this.jsonEncrypt(node.tags), this.jsonEncrypt(node.entities),
+      node.timestamp, node.confidence ?? Number(node.metadata?.confidence || 0),
+      this.jsonEncrypt(node.tags), this.jsonEncrypt(node.entities),
       node.summary ? this.encrypt(node.summary) : null, this.jsonEncrypt(node.metadata),
       this.siteId, version
     )
@@ -1003,6 +1017,27 @@ export class DatabaseService {
       'SELECT * FROM memory_nodes WHERE source_id = ? AND deleted_at IS NULL ORDER BY timestamp DESC'
     ).all(sourceId) as Record<string, unknown>[]
     return rows.map(r => this.rowToNode(r))
+  }
+
+  getDeletedNodes(limit = 100): MemoryNode[] {
+    const cutoff = Date.now() - 30 * 86_400_000
+    const rows = this.db.prepare(
+      'SELECT * FROM memory_nodes WHERE deleted_at IS NOT NULL AND deleted_at >= ? ORDER BY deleted_at DESC LIMIT ?'
+    ).all(cutoff, limit) as Record<string, unknown>[]
+    return rows.map(r => this.rowToNode(r))
+  }
+
+  restoreNode(id: string): boolean {
+    this.db.prepare('UPDATE memory_nodes SET deleted_at = NULL, version = version + 1, site_id = ? WHERE id = ?')
+      .run(this.siteId, id)
+    this.logChange('memory_nodes', id, 'update', Date.now())
+    return true
+  }
+
+  purgeExpiredDeletedNodes(retentionDays = 30): number {
+    const cutoff = Date.now() - retentionDays * 86_400_000
+    const result = this.db.prepare('DELETE FROM memory_nodes WHERE deleted_at IS NOT NULL AND deleted_at < ?').run(cutoff)
+    return Number(result.changes || 0)
   }
 
   // Soft delete — sets deleted_at instead of removing the row
@@ -1091,6 +1126,7 @@ export class DatabaseService {
       sourceName: this.decrypt(row['source_name'] as string),
       sourceType: row['source_type'] as string,
       timestamp: row['timestamp'] as number,
+      confidence: typeof row['confidence'] === 'number' ? row['confidence'] as number : Number(row['confidence'] || 0),
       tags: this.jsonDecrypt<string[]>(row['tags'], []),
       entities: this.jsonDecrypt<string[]>(row['entities'], []),
       summary: row['summary'] ? this.decrypt(row['summary'] as string) : undefined,

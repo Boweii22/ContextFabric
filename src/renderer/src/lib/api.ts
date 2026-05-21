@@ -16,6 +16,9 @@ declare global {
         getTimeline: (limit?: number) => Promise<unknown>
         getStats: () => Promise<unknown>
         getHistory: (limit?: number) => Promise<unknown>
+        deleted: (limit?: number) => Promise<unknown>
+        restoreNode: (id: string) => Promise<unknown>
+        purgeExpired: () => Promise<unknown>
       }
       sources: {
         list: () => Promise<unknown>

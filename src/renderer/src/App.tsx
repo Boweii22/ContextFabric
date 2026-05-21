@@ -15,6 +15,7 @@ import SettingsPage from './pages/Settings'
 import PermissionsPage from './pages/Permissions'
 import HelpPage from './pages/Help'
 import ConflictsPage from './pages/Conflicts'
+import RecoveryPage from './pages/Recovery'
 import type {
   DataSource, Stats, AppSettings, ProcessingStatus,
   Entity, TimelineEvent, AIQueryResult
@@ -114,6 +115,7 @@ export default function App(): React.ReactElement {
           <Route path="permissions" element={<PermissionsPage />} />
           <Route path="help" element={<HelpPage />} />
           <Route path="conflicts" element={<ConflictsPage />} />
+          <Route path="recovery" element={<RecoveryPage />} />
         </Route>
         <Route
           path="*"

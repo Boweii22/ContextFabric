@@ -7,6 +7,7 @@ export interface MemoryNode {
   sourceName: string
   sourceType: string
   timestamp: number
+  confidence: number
   tags: string[]
   entities: string[]
   embedding?: number[]
