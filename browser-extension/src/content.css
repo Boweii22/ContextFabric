@@ -1,0 +1,126 @@
+#contextfabric-bridge {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2147483647;
+  color: #101828;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#contextfabric-bridge * {
+  box-sizing: border-box;
+  letter-spacing: 0;
+}
+
+.cfb-trigger {
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(16, 24, 40, 0.14);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #101828;
+  box-shadow: 0 12px 30px rgba(16, 24, 40, 0.18);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.cfb-panel {
+  position: absolute;
+  right: 0;
+  bottom: 54px;
+  width: min(360px, calc(100vw - 28px));
+  border: 1px solid rgba(16, 24, 40, 0.12);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 45px rgba(16, 24, 40, 0.2);
+  padding: 12px;
+}
+
+.cfb-header,
+.cfb-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cfb-header strong {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.cfb-icon {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: #f2f4f7;
+  color: #475467;
+  cursor: pointer;
+}
+
+.cfb-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.cfb-field span {
+  color: #475467;
+  font-size: 12px;
+}
+
+.cfb-field textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 74px;
+  border: 1px solid #d0d5dd;
+  border-radius: 7px;
+  padding: 8px;
+  color: #101828;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.cfb-actions {
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.cfb-actions button {
+  border: 1px solid #d0d5dd;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #101828;
+  padding: 7px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.cfb-actions button:first-child {
+  border-color: #155eef;
+  background: #155eef;
+  color: #ffffff;
+}
+
+.cfb-status {
+  margin: 10px 0 0;
+  color: #475467;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.cfb-status[data-tone="ok"] {
+  color: #027a48;
+}
+
+.cfb-status[data-tone="warn"] {
+  color: #b54708;
+}
+
+.cfb-status[data-tone="error"] {
+  color: #b42318;
+}

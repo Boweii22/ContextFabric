@@ -1,0 +1,72 @@
+{
+  "manifest_version": 3,
+  "name": "ContextFabric Bridge",
+  "version": "0.1.0",
+  "description": "Inject approved local ContextFabric memory into AI chat tools.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "http://localhost:47821/*",
+    "http://127.0.0.1:47821/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "https://www.perplexity.ai/*",
+    "https://perplexity.ai/*",
+    "https://poe.com/*",
+    "https://copilot.microsoft.com/*",
+    "https://www.cursor.com/*",
+    "https://cursor.com/*",
+    "https://app.cursor.com/*",
+    "https://mistral.ai/*",
+    "https://chat.mistral.ai/*",
+    "https://chat.deepseek.com/*",
+    "https://grok.com/*",
+    "https://you.com/*",
+    "https://www.phind.com/*",
+    "https://huggingface.co/chat/*",
+    "https://kimi.moonshot.cn/*",
+    "https://chat.qwen.ai/*",
+    "https://notebooklm.google.com/*",
+    "https://aistudio.google.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*",
+        "https://perplexity.ai/*",
+        "https://poe.com/*",
+        "https://copilot.microsoft.com/*",
+        "https://www.cursor.com/*",
+        "https://cursor.com/*",
+        "https://app.cursor.com/*",
+        "https://mistral.ai/*",
+        "https://chat.mistral.ai/*",
+        "https://chat.deepseek.com/*",
+        "https://grok.com/*",
+        "https://you.com/*",
+        "https://www.phind.com/*",
+        "https://huggingface.co/chat/*",
+        "https://kimi.moonshot.cn/*",
+        "https://chat.qwen.ai/*",
+        "https://notebooklm.google.com/*",
+        "https://aistudio.google.com/*"
+      ],
+      "js": ["src/content.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "ContextFabric",
+    "default_popup": "src/popup.html"
+  },
+  "options_page": "src/options.html"
+}

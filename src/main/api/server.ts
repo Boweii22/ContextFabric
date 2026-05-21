@@ -39,10 +39,10 @@ function permissionMiddleware(db: DatabaseService) {
     const settings = db.getAllSettings()
     const allowedApps = (settings.allowedApps as Record<string, boolean>) || {}
     const activeGrant = db.getActiveAppGrant(appId)
-    const appAllowed = Boolean(activeGrant) || (allowedApps[appId] ?? (appId !== 'external'))
+    const appAllowed = Boolean(activeGrant) || (allowedApps[appId] ?? false)
 
     if (!appAllowed) {
-      res.status(403).json({ error: `App "${appId}" is not allowed. Enable it in ContextFabric → Permissions.` })
+      res.status(403).json({ error: `App "${appId}" is not allowed. Request access and approve it in ContextFabric Permissions.` })
       return
     }
 

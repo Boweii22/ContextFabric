@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ContextFabric Bridge Options</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <h1>ContextFabric Bridge</h1>
+      <label>
+        Daemon URL
+        <input data-api-url type="url" placeholder="http://localhost:47821">
+      </label>
+      <label>
+        App ID
+        <input data-app-id type="text" placeholder="browser-extension">
+      </label>
+      <label>
+        Default context query
+        <textarea data-default-query rows="4"></textarea>
+      </label>
+      <label>
+        Max prompt size
+        <input data-max-tokens type="number" min="400" max="8000" step="100">
+      </label>
+      <div class="actions">
+        <button type="button" data-save>Save</button>
+        <span data-status></span>
+      </div>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
