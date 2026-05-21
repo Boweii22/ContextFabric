@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Database, Plus, Trash2, RefreshCw, AlertCircle, Check,
@@ -9,7 +9,7 @@ import {
 import { api } from '../../lib/api'
 import { useAppStore } from '../../store'
 import { formatDate, cn } from '../../lib/utils'
-import type { DataSource } from '../../../../shared/types'
+import type { DataSource, ProcessingStatus } from '../../../../shared/types'
 
 const SOURCE_CONFIGS = {
   claude_export: { label: 'Claude Export', icon: MessageSquare, color: '#6366F1', desc: 'claude.ai → Settings → Privacy & Data → Export Data → JSON (instant download)' },
@@ -24,30 +24,142 @@ const SOURCE_CONFIGS = {
 
 type SourceType = keyof typeof SOURCE_CONFIGS
 
+interface IngestionLog {
+  id: string
+  timestamp: number
+  level: 'info' | 'success' | 'error'
+  sourceId?: string
+  sourceName?: string
+  message: string
+}
+
+type DroppedFile = File & { path?: string }
+
+function basenameFromPath(path: string): string {
+  return path.replace(/\\/g, '/').split('/').filter(Boolean).pop() || path
+}
+
+function nameFromPath(path: string): string {
+  return basenameFromPath(path).replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ')
+}
+
+function inferSourceType(path: string): SourceType {
+  const lower = path.toLowerCase()
+  const fileName = basenameFromPath(lower)
+  if (lower.endsWith('.pdf')) return 'pdf'
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown'
+  if (lower.endsWith('.json') && (fileName.includes('chatgpt') || fileName === 'conversations.json')) return 'chatgpt_export'
+  if (lower.endsWith('.json') && (fileName.includes('claude') || fileName.includes('conversation'))) return 'claude_export'
+  if (lower.includes('.git') || fileName.includes('repo')) return 'github_repo'
+  if (lower.includes('notion')) return 'notion_export'
+  return 'local_folder'
+}
+
 export default function SourcesPage(): React.ReactElement {
   const { sources, setSources, updateSource, processingStatuses } = useAppStore()
   const [showAddModal, setShowAddModal] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [ingestionLogs, setIngestionLogs] = useState<IngestionLog[]>([])
+  const sourcesRef = useRef<DataSource[]>(sources)
+
+  useEffect(() => {
+    sourcesRef.current = sources
+  }, [sources])
+
+  function appendLog(log: Omit<IngestionLog, 'id' | 'timestamp'>) {
+    setIngestionLogs(current => [{
+      ...log,
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      timestamp: Date.now(),
+    }, ...current].slice(0, 80))
+  }
+
+  function sourceNameFor(id?: string) {
+    return sourcesRef.current.find(source => source.id === id)?.name
+  }
+
+  useEffect(() => {
+    const offProcessing = api.on('processing:status', (payload: unknown) => {
+      const status = payload as ProcessingStatus
+      appendLog({
+        level: 'info',
+        sourceId: status.sourceId,
+        sourceName: sourceNameFor(status.sourceId),
+        message: `${status.phase}: ${status.message}`,
+      })
+    })
+
+    const offSynced = api.on('source:synced', (payload: unknown) => {
+      const { id, count } = payload as { id: string; count: number }
+      appendLog({
+        level: 'success',
+        sourceId: id,
+        sourceName: sourceNameFor(id),
+        message: `Sync complete. Indexed ${count.toLocaleString()} node${count === 1 ? '' : 's'}.`,
+      })
+    })
+
+    const offError = api.on('source:error', (payload: unknown) => {
+      const { id, error } = payload as { id: string; error?: string }
+      appendLog({
+        level: 'error',
+        sourceId: id,
+        sourceName: sourceNameFor(id),
+        message: error || 'Sync failed.',
+      })
+    })
+
+    return () => {
+      offProcessing()
+      offSynced()
+      offError()
+    }
+  }, [])
 
   async function handleSync(id: string) {
     updateSource(id, { status: 'indexing' })
+    appendLog({
+      level: 'info',
+      sourceId: id,
+      sourceName: sourceNameFor(id),
+      message: 'Manual sync started.',
+    })
     try {
       await api.sources.sync(id)
     } catch (err) {
       updateSource(id, { status: 'error' })
+      appendLog({
+        level: 'error',
+        sourceId: id,
+        sourceName: sourceNameFor(id),
+        message: err instanceof Error ? err.message : 'Unable to start sync.',
+      })
     }
   }
 
   async function handleDelete(id: string) {
+    const deletedName = sourceNameFor(id)
     await api.sources.remove(id)
     const updated = await api.sources.list() as DataSource[]
     setSources(updated)
     setConfirmDelete(null)
+    appendLog({
+      level: 'info',
+      sourceId: id,
+      sourceName: deletedName,
+      message: 'Source removed from memory.',
+    })
   }
 
   async function handleToggle(id: string, enabled: boolean) {
     updateSource(id, { enabled })
     await api.sources.toggle(id, enabled)
+    appendLog({
+      level: 'info',
+      sourceId: id,
+      sourceName: sourceNameFor(id),
+      message: enabled ? 'Source enabled.' : 'Source disabled.',
+    })
   }
 
   return (
@@ -67,6 +179,12 @@ export default function SourcesPage(): React.ReactElement {
             Add Source
           </button>
         </div>
+
+        <IngestionLogPanel
+          logs={ingestionLogs}
+          activeCount={Object.keys(processingStatuses).length}
+          onClear={() => setIngestionLogs([])}
+        />
 
         {/* Sources list */}
         {sources.length === 0 ? (
@@ -163,6 +281,113 @@ export default function SourcesPage(): React.ReactElement {
         </AnimatePresence>
       </div>
     </div>
+  )
+}
+
+function IngestionLogPanel({
+  logs,
+  activeCount,
+  onClear,
+}: {
+  logs: IngestionLog[]
+  activeCount: number
+  onClear: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const visibleLogs = expanded ? logs : logs.slice(0, 4)
+  const hasLogs = logs.length > 0
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="surface-card p-4 mb-6"
+    >
+      <div className="flex items-center gap-3">
+        <div className={cn(
+          'w-8 h-8 rounded-xl flex items-center justify-center',
+          activeCount > 0 ? 'bg-indigo-500/15 text-indigo-400' : 'bg-cosmos-700/60 text-slate-500'
+        )}>
+          {activeCount > 0 ? <Loader2 className="w-4 h-4 animate-spin" /> : <Clock className="w-4 h-4" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-white">Live Ingestion Logs</h2>
+            {activeCount > 0 && (
+              <span className="text-2xs px-1.5 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400">
+                {activeCount} active
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-500">
+            {hasLogs ? `${logs.length} event${logs.length === 1 ? '' : 's'} captured this session` : 'Sync events will appear here as sources are processed'}
+          </p>
+        </div>
+        {hasLogs && (
+          <button
+            onClick={onClear}
+            className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1 rounded-lg hover:bg-white/[0.04] transition-all"
+          >
+            Clear
+          </button>
+        )}
+        {logs.length > 4 && (
+          <button
+            onClick={() => setExpanded(v => !v)}
+            className="text-xs text-indigo-400 hover:text-indigo-300 px-2 py-1 rounded-lg hover:bg-indigo-500/10 transition-all"
+          >
+            {expanded ? 'Collapse' : 'Show all'}
+          </button>
+        )}
+      </div>
+
+      <AnimatePresence initial={false}>
+        {hasLogs && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-4 space-y-2 max-h-72 overflow-y-auto scrollbar-none">
+              {visibleLogs.map(log => (
+                <motion.div
+                  key={log.id}
+                  initial={{ opacity: 0, x: -6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  className="flex items-start gap-3 rounded-xl bg-cosmos-700/35 border border-white/[0.05] px-3 py-2"
+                >
+                  <div className={cn(
+                    'w-1.5 h-1.5 rounded-full mt-2 shrink-0',
+                    log.level === 'success' && 'bg-emerald-400',
+                    log.level === 'error' && 'bg-red-400',
+                    log.level === 'info' && 'bg-indigo-400'
+                  )} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-2xs text-slate-600 shrink-0">
+                        {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                      {log.sourceName && (
+                        <span className="text-2xs text-slate-500 truncate">{log.sourceName}</span>
+                      )}
+                    </div>
+                    <p className={cn(
+                      'text-xs leading-relaxed',
+                      log.level === 'success' ? 'text-emerald-300/90' :
+                      log.level === 'error' ? 'text-red-300/90' :
+                      'text-slate-400'
+                    )}>
+                      {log.message}
+                    </p>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.section>
   )
 }
 
@@ -299,11 +524,82 @@ function StatusBadge({ status }: { status: DataSource['status'] }) {
   )
 }
 
+function DropZone({
+  active,
+  path,
+  onDrop,
+  onDrag,
+}: {
+  active: boolean
+  path: string
+  onDrop: (event: React.DragEvent) => void
+  onDrag: (event: React.DragEvent, active: boolean) => void
+}) {
+  return (
+    <div
+      onDragEnter={event => onDrag(event, true)}
+      onDragOver={event => onDrag(event, true)}
+      onDragLeave={event => onDrag(event, false)}
+      onDrop={onDrop}
+      className={cn(
+        'rounded-2xl border border-dashed p-5 transition-all',
+        active
+          ? 'border-indigo-400 bg-indigo-500/10 shadow-glow-sm'
+          : path
+            ? 'border-emerald-500/25 bg-emerald-500/5'
+            : 'border-white/[0.12] bg-cosmos-700/30 hover:border-indigo-500/30 hover:bg-indigo-500/5'
+      )}
+    >
+      <div className="flex items-center gap-3">
+        <div className={cn(
+          'w-10 h-10 rounded-xl flex items-center justify-center shrink-0',
+          path ? 'bg-emerald-500/10 text-emerald-400' : 'bg-indigo-500/10 text-indigo-400'
+        )}>
+          {path ? <FolderOpen className="w-5 h-5" /> : <Upload className="w-5 h-5" />}
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-white">
+            {path ? 'Dropped source path captured' : 'Drop a file or folder here'}
+          </div>
+          <p className="text-xs text-slate-500 truncate">
+            {path || 'ContextFabric will infer the source type and fill the path for you.'}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AddSourceModal({ onClose, onAdd }: { onClose: () => void; onAdd: (data: Omit<DataSource, 'id' | 'status' | 'nodeCount'>) => Promise<void> }) {
   const [selectedType, setSelectedType] = useState<SourceType | null>(null)
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [adding, setAdding] = useState(false)
+  const [dragActive, setDragActive] = useState(false)
+
+  function applyDroppedPath(nextPath: string) {
+    if (!nextPath.trim()) return
+    const inferred = inferSourceType(nextPath)
+    setSelectedType(inferred)
+    setPath(nextPath)
+    if (!name.trim()) setName(nameFromPath(nextPath) || SOURCE_CONFIGS[inferred].label)
+  }
+
+  function handleDrop(event: React.DragEvent) {
+    event.preventDefault()
+    event.stopPropagation()
+    setDragActive(false)
+
+    const file = event.dataTransfer.files[0] as DroppedFile | undefined
+    const droppedPath = file?.path || event.dataTransfer.getData('text/plain')
+    applyDroppedPath(droppedPath)
+  }
+
+  function handleDrag(event: React.DragEvent, active: boolean) {
+    event.preventDefault()
+    event.stopPropagation()
+    setDragActive(active)
+  }
 
   async function handleAdd() {
     if (!selectedType || !name.trim() || !path.trim()) return
@@ -342,9 +638,16 @@ function AddSourceModal({ onClose, onAdd }: { onClose: () => void; onAdd: (data:
         <h2 className="text-lg font-bold text-white mb-1">Add Data Source</h2>
         <p className="text-sm text-slate-500 mb-6">Connect a new knowledge source to your memory</p>
 
+        <DropZone
+          active={dragActive}
+          path={path}
+          onDrop={handleDrop}
+          onDrag={(event, active) => handleDrag(event, active)}
+        />
+
         {/* Type selection */}
         {!selectedType ? (
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-2 gap-2.5 mt-5">
             {(Object.entries(SOURCE_CONFIGS) as [SourceType, typeof SOURCE_CONFIGS[SourceType]][]).map(([type, config]) => (
               <button
                 key={type}
@@ -368,7 +671,7 @@ function AddSourceModal({ onClose, onAdd }: { onClose: () => void; onAdd: (data:
             ))}
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-4 mt-5">
             {/* Back */}
             <button
               onClick={() => { setSelectedType(null); setName(''); setPath('') }}
