@@ -2,11 +2,16 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
 import { mkdirSync, existsSync } from 'fs'
-import { randomBytes, createCipheriv, createDecipheriv } from 'crypto'
+import {
+  randomBytes, createCipheriv, createDecipheriv, createHash,
+  generateKeyPairSync, createPrivateKey, createPublicKey,
+  sign as cryptoSign, verify as cryptoVerify
+} from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import type {
   MemoryNode, MemoryEdge, DataSource, Entity,
-  TimelineEvent, AppSettings, Stats, AIQueryResult
+  TimelineEvent, AppSettings, Stats, AIQueryResult, ContextToken, ContextAccessLog,
+  AppAccessGrant, ContextPermissionRequest
 } from '../../shared/types'
 
 // ─── CR-SQLite Readiness ─────────────────────────────────────────────────────
@@ -27,7 +32,7 @@ import type {
 //   The sync_changes table maps directly to crsql_changes format
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 4
 
 export class DatabaseService {
   private db!: Database.Database
@@ -90,6 +95,7 @@ export class DatabaseService {
     this.runMigrations()
     this.siteId = this.getOrCreateSiteId()
     this.resetStuckSources()
+    this.resetSessionGrants()
   }
 
   // Any source left as 'indexing' from a previous crashed/killed sync
@@ -98,6 +104,12 @@ export class DatabaseService {
     this.db.prepare(
       "UPDATE data_sources SET status = 'idle' WHERE status = 'indexing'"
     ).run()
+  }
+
+  private resetSessionGrants(): void {
+    this.db.prepare(
+      "UPDATE app_access_grants SET revoked_at = ? WHERE grant_type = 'session' AND revoked_at IS NULL"
+    ).run(Date.now())
   }
 
   getSiteId(): string { return this.siteId }
@@ -272,6 +284,77 @@ export class DatabaseService {
       `)
 
       this.setSchemaVersion(2)
+    }
+
+    if (currentVersion < 3) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS context_tokens (
+          token_hash  TEXT    PRIMARY KEY,
+          token_id    TEXT    NOT NULL UNIQUE,
+          token       TEXT    NOT NULL,
+          context     TEXT    NOT NULL,
+          summary     TEXT    NOT NULL,
+          query       TEXT,
+          app_id      TEXT    NOT NULL DEFAULT 'external',
+          scope       TEXT    NOT NULL DEFAULT 'context',
+          source_ids  TEXT    NOT NULL DEFAULT '[]',
+          expires_at  INTEGER NOT NULL,
+          revoked_at  INTEGER,
+          created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_context_tokens_expires ON context_tokens(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_context_tokens_app     ON context_tokens(app_id);
+
+        CREATE TABLE IF NOT EXISTS context_access_log (
+          id          TEXT    PRIMARY KEY,
+          app_id      TEXT    NOT NULL,
+          action      TEXT    NOT NULL,
+          token_hash  TEXT,
+          source_ids  TEXT    NOT NULL DEFAULT '[]',
+          query       TEXT,
+          scope       TEXT,
+          success     INTEGER NOT NULL DEFAULT 1,
+          details     TEXT,
+          created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_context_access_created ON context_access_log(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_context_access_app     ON context_access_log(app_id);
+      `)
+
+      this.setSchemaVersion(3)
+    }
+
+    if (currentVersion < 4) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS permission_requests (
+          id                   TEXT    PRIMARY KEY,
+          app_id               TEXT    NOT NULL,
+          requested_scopes     TEXT    NOT NULL DEFAULT '[]',
+          requested_source_ids TEXT    NOT NULL DEFAULT '[]',
+          reason               TEXT,
+          status               TEXT    NOT NULL DEFAULT 'pending',
+          grant_type           TEXT,
+          expires_at           INTEGER,
+          created_at           INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          resolved_at          INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_permission_requests_status ON permission_requests(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_permission_requests_app    ON permission_requests(app_id);
+
+        CREATE TABLE IF NOT EXISTS app_access_grants (
+          id          TEXT    PRIMARY KEY,
+          app_id      TEXT    NOT NULL,
+          grant_type  TEXT    NOT NULL,
+          scopes      TEXT    NOT NULL DEFAULT '[]',
+          source_ids  TEXT    NOT NULL DEFAULT '[]',
+          expires_at  INTEGER,
+          created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+          revoked_at  INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_access_grants_app ON app_access_grants(app_id, revoked_at, expires_at);
+      `)
+
+      this.setSchemaVersion(4)
     }
 
     this.initializeDefaultSettings()
@@ -781,6 +864,401 @@ export class DatabaseService {
   }
 
   // ─── SETTINGS ──────────────────────────────────────────────────────────────
+
+  // Context tokens are signed Ed25519 bearer artifacts and persisted so grants
+  // survive restarts and can be audited/revoked from the local UI.
+  private b64url(data: Buffer | string): string {
+    return Buffer.from(data).toString('base64url')
+  }
+
+  private tokenHash(token: string): string {
+    return createHash('sha256').update(token).digest('hex')
+  }
+
+  private getOrCreateSigningKeys(): { privateKeyPem: string; publicKeyPem: string } {
+    const existing = this.getSetting<{ privateKeyPem: string; publicKeyPem: string }>('context_signing_key')
+    if (existing?.privateKeyPem && existing.publicKeyPem) return existing
+
+    const pair = generateKeyPairSync('ed25519', {
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    })
+    const keys = { privateKeyPem: pair.privateKey, publicKeyPem: pair.publicKey }
+    this.setSetting('context_signing_key', keys)
+    return keys
+  }
+
+  getContextPublicKey(): string {
+    return this.getOrCreateSigningKeys().publicKeyPem
+  }
+
+  private signTokenPayload(payload: Record<string, unknown>): string {
+    const { privateKeyPem } = this.getOrCreateSigningKeys()
+    const encodedPayload = this.b64url(JSON.stringify(payload))
+    const signature = cryptoSign(null, Buffer.from(encodedPayload), createPrivateKey(privateKeyPem))
+    return `${encodedPayload}.${signature.toString('base64url')}`
+  }
+
+  private verifyToken(token: string): Record<string, unknown> | null {
+    const [payloadPart, signaturePart] = token.split('.')
+    if (!payloadPart || !signaturePart) return null
+    try {
+      const { publicKeyPem } = this.getOrCreateSigningKeys()
+      const ok = cryptoVerify(
+        null,
+        Buffer.from(payloadPart),
+        createPublicKey(publicKeyPem),
+        Buffer.from(signaturePart, 'base64url')
+      )
+      if (!ok) return null
+      return JSON.parse(Buffer.from(payloadPart, 'base64url').toString('utf8')) as Record<string, unknown>
+    } catch {
+      return null
+    }
+  }
+
+  createContextToken(input: {
+    context: string
+    summary: string
+    query?: string
+    appId: string
+    scope: string
+    sourceIds: string[]
+    ttlSeconds: number
+  }): ContextToken {
+    const now = Date.now()
+    const tokenId = uuidv4()
+    const expiresAt = now + Math.max(60, Math.min(input.ttlSeconds, 86_400)) * 1000
+    const payload = {
+      iss: 'contextfabric-local',
+      aud: input.appId,
+      jti: tokenId,
+      iat: Math.floor(now / 1000),
+      exp: Math.floor(expiresAt / 1000),
+      scope: input.scope,
+      sourceIds: input.sourceIds,
+      query: input.query,
+    }
+    const token = this.signTokenPayload(payload)
+    const hash = this.tokenHash(token)
+
+    this.db.prepare(`
+      INSERT INTO context_tokens
+        (token_hash, token_id, token, context, summary, query, app_id, scope, source_ids, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      hash, tokenId, token, input.context, input.summary, input.query || null,
+      input.appId, input.scope, JSON.stringify(input.sourceIds), expiresAt, now
+    )
+
+    this.logContextAccess({
+      appId: input.appId,
+      action: 'token_issued',
+      token,
+      sourceIds: input.sourceIds,
+      query: input.query,
+      scope: input.scope,
+      success: true,
+      details: `Token expires at ${new Date(expiresAt).toISOString()}`,
+    })
+
+    return { token, summary: input.summary, expiresAt, createdAt: now, query: input.query, appId: input.appId, scope: input.scope, sourceIds: input.sourceIds }
+  }
+
+  getContextToken(token: string, appId = 'external'): (ContextToken & { context: string }) | null {
+    const payload = this.verifyToken(token)
+    if (!payload) {
+      this.logContextAccess({ appId, action: 'token_retrieved', token, sourceIds: [], success: false, details: 'Invalid token signature' })
+      return null
+    }
+
+    const hash = this.tokenHash(token)
+    const row = this.db.prepare(
+      'SELECT * FROM context_tokens WHERE token_hash = ?'
+    ).get(hash) as Record<string, unknown> | undefined
+
+    if (!row || row['revoked_at'] || Number(row['expires_at']) < Date.now()) {
+      this.logContextAccess({ appId, action: 'token_retrieved', token, sourceIds: [], success: false, details: 'Token missing, revoked, or expired' })
+      return null
+    }
+
+    const sourceIds = JSON.parse(row['source_ids'] as string || '[]') as string[]
+    this.logContextAccess({
+      appId,
+      action: 'token_retrieved',
+      token,
+      sourceIds,
+      query: row['query'] as string | undefined,
+      scope: row['scope'] as string | undefined,
+      success: true,
+    })
+
+    return {
+      token: row['token'] as string,
+      context: row['context'] as string,
+      summary: row['summary'] as string,
+      expiresAt: row['expires_at'] as number,
+      createdAt: row['created_at'] as number,
+      query: row['query'] as string | undefined,
+      appId: row['app_id'] as string,
+      scope: row['scope'] as string,
+      sourceIds,
+      revokedAt: row['revoked_at'] as number | undefined,
+    }
+  }
+
+  listContextTokens(includeRevoked = false): ContextToken[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM context_tokens
+      WHERE (? = 1 OR revoked_at IS NULL) AND expires_at > ?
+      ORDER BY created_at DESC
+      LIMIT 100
+    `).all(includeRevoked ? 1 : 0, Date.now()) as Record<string, unknown>[]
+
+    return rows.map(row => ({
+      token: row['token'] as string,
+      summary: row['summary'] as string,
+      expiresAt: row['expires_at'] as number,
+      createdAt: row['created_at'] as number,
+      query: row['query'] as string | undefined,
+      appId: row['app_id'] as string,
+      scope: row['scope'] as string,
+      sourceIds: JSON.parse(row['source_ids'] as string || '[]'),
+      revokedAt: row['revoked_at'] as number | undefined,
+    }))
+  }
+
+  revokeContextToken(token: string, appId = 'local-ui'): boolean {
+    const hash = this.tokenHash(token)
+    const result = this.db.prepare(
+      'UPDATE context_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL'
+    ).run(Date.now(), hash)
+    const success = result.changes > 0
+    this.logContextAccess({ appId, action: 'token_revoked', token, sourceIds: [], success })
+    return success
+  }
+
+  revokeAllContextTokens(appId = 'local-ui'): void {
+    this.db.prepare(
+      'UPDATE context_tokens SET revoked_at = ? WHERE revoked_at IS NULL'
+    ).run(Date.now())
+    this.logContextAccess({ appId, action: 'token_revoked', sourceIds: [], success: true, details: 'All active tokens revoked' })
+  }
+
+  logContextAccess(entry: {
+    appId: string
+    action: ContextAccessLog['action']
+    token?: string
+    sourceIds: string[]
+    query?: string
+    scope?: string
+    success: boolean
+    details?: string
+  }): void {
+    this.db.prepare(`
+      INSERT INTO context_access_log
+        (id, app_id, action, token_hash, source_ids, query, scope, success, details, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      uuidv4(),
+      entry.appId,
+      entry.action,
+      entry.token ? this.tokenHash(entry.token) : null,
+      JSON.stringify(entry.sourceIds),
+      entry.query || null,
+      entry.scope || null,
+      entry.success ? 1 : 0,
+      entry.details || null,
+      Date.now()
+    )
+  }
+
+  getContextAccessLogs(limit = 100): ContextAccessLog[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM context_access_log ORDER BY created_at DESC LIMIT ?'
+    ).all(limit) as Record<string, unknown>[]
+
+    return rows.map(row => ({
+      id: row['id'] as string,
+      appId: row['app_id'] as string,
+      action: row['action'] as ContextAccessLog['action'],
+      tokenHash: row['token_hash'] as string | undefined,
+      sourceIds: JSON.parse(row['source_ids'] as string || '[]'),
+      query: row['query'] as string | undefined,
+      scope: row['scope'] as string | undefined,
+      success: Boolean(row['success']),
+      details: row['details'] as string | undefined,
+      createdAt: row['created_at'] as number,
+    }))
+  }
+
+  createPermissionRequest(input: {
+    appId: string
+    requestedScopes: string[]
+    requestedSourceIds: string[]
+    reason?: string
+  }): ContextPermissionRequest {
+    const now = Date.now()
+    const existing = this.db.prepare(`
+      SELECT * FROM permission_requests
+      WHERE app_id = ? AND status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(input.appId) as Record<string, unknown> | undefined
+
+    if (existing) return this.rowToPermissionRequest(existing)
+
+    const request: ContextPermissionRequest = {
+      id: uuidv4(),
+      appId: input.appId,
+      requestedScopes: input.requestedScopes,
+      requestedSourceIds: input.requestedSourceIds,
+      reason: input.reason,
+      status: 'pending',
+      createdAt: now,
+    }
+
+    this.db.prepare(`
+      INSERT INTO permission_requests
+        (id, app_id, requested_scopes, requested_source_ids, reason, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?)
+    `).run(
+      request.id,
+      request.appId,
+      JSON.stringify(request.requestedScopes),
+      JSON.stringify(request.requestedSourceIds),
+      request.reason || null,
+      now
+    )
+
+    this.logContextAccess({
+      appId: request.appId,
+      action: 'permission_requested',
+      sourceIds: request.requestedSourceIds,
+      scope: request.requestedScopes.join(','),
+      success: true,
+      details: request.reason || 'Permission requested',
+    })
+
+    return request
+  }
+
+  getPermissionRequest(id: string): ContextPermissionRequest | null {
+    const row = this.db.prepare(
+      'SELECT * FROM permission_requests WHERE id = ?'
+    ).get(id) as Record<string, unknown> | undefined
+    return row ? this.rowToPermissionRequest(row) : null
+  }
+
+  getPendingPermissionRequests(limit = 20): ContextPermissionRequest[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM permission_requests
+      WHERE status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(limit) as Record<string, unknown>[]
+    return rows.map(row => this.rowToPermissionRequest(row))
+  }
+
+  resolvePermissionRequest(
+    id: string,
+    decision: 'one_hour' | 'session' | 'always' | 'deny'
+  ): ContextPermissionRequest | null {
+    const request = this.getPermissionRequest(id)
+    if (!request || request.status !== 'pending') return request
+
+    const now = Date.now()
+    if (decision === 'deny') {
+      this.db.prepare(`
+        UPDATE permission_requests
+        SET status = 'denied', resolved_at = ?
+        WHERE id = ?
+      `).run(now, id)
+      this.logContextAccess({
+        appId: request.appId,
+        action: 'denied',
+        sourceIds: request.requestedSourceIds,
+        scope: request.requestedScopes.join(','),
+        success: true,
+        details: 'Permission request denied',
+      })
+      return this.getPermissionRequest(id)
+    }
+
+    const expiresAt = decision === 'one_hour' ? now + 3_600_000 : undefined
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO app_access_grants
+          (id, app_id, grant_type, scopes, source_ids, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        uuidv4(),
+        request.appId,
+        decision,
+        JSON.stringify(request.requestedScopes),
+        JSON.stringify(request.requestedSourceIds),
+        expiresAt || null,
+        now
+      )
+
+      this.db.prepare(`
+        UPDATE permission_requests
+        SET status = 'granted', grant_type = ?, expires_at = ?, resolved_at = ?
+        WHERE id = ?
+      `).run(decision, expiresAt || null, now, id)
+    })()
+
+    this.logContextAccess({
+      appId: request.appId,
+      action: 'permission_granted',
+      sourceIds: request.requestedSourceIds,
+      scope: request.requestedScopes.join(','),
+      success: true,
+      details: `Granted ${decision.replace('_', ' ')}`,
+    })
+
+    return this.getPermissionRequest(id)
+  }
+
+  getActiveAppGrant(appId: string): AppAccessGrant | null {
+    const rows = this.db.prepare(`
+      SELECT * FROM app_access_grants
+      WHERE app_id = ? AND revoked_at IS NULL
+      ORDER BY created_at DESC
+    `).all(appId) as Record<string, unknown>[]
+
+    const now = Date.now()
+    for (const row of rows) {
+      const expiresAt = row['expires_at'] as number | null
+      if (expiresAt && expiresAt < now) continue
+      return {
+        id: row['id'] as string,
+        appId: row['app_id'] as string,
+        grantType: row['grant_type'] as AppAccessGrant['grantType'],
+        scopes: JSON.parse(row['scopes'] as string || '[]'),
+        sourceIds: JSON.parse(row['source_ids'] as string || '[]'),
+        expiresAt: expiresAt || undefined,
+        createdAt: row['created_at'] as number,
+        revokedAt: row['revoked_at'] as number | undefined,
+      }
+    }
+    return null
+  }
+
+  private rowToPermissionRequest(row: Record<string, unknown>): ContextPermissionRequest {
+    return {
+      id: row['id'] as string,
+      appId: row['app_id'] as string,
+      requestedScopes: JSON.parse(row['requested_scopes'] as string || '[]'),
+      requestedSourceIds: JSON.parse(row['requested_source_ids'] as string || '[]'),
+      reason: row['reason'] as string | undefined,
+      status: row['status'] as ContextPermissionRequest['status'],
+      grantType: row['grant_type'] as ContextPermissionRequest['grantType'] | undefined,
+      expiresAt: row['expires_at'] as number | undefined,
+      createdAt: row['created_at'] as number,
+      resolvedAt: row['resolved_at'] as number | undefined,
+    }
+  }
 
   getSetting<T>(key: string): T | null {
     const row = this.db.prepare(

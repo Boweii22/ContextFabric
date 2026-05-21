@@ -110,12 +110,53 @@ export interface AppSettings {
   geminiModel?: string
 }
 
+export interface AppAccessGrant {
+  id: string
+  appId: string
+  grantType: 'one_hour' | 'session' | 'always'
+  scopes: string[]
+  sourceIds: string[]
+  expiresAt?: number
+  createdAt: number
+  revokedAt?: number
+}
+
+export interface ContextPermissionRequest {
+  id: string
+  appId: string
+  requestedScopes: string[]
+  requestedSourceIds: string[]
+  reason?: string
+  status: 'pending' | 'granted' | 'denied'
+  grantType?: 'one_hour' | 'session' | 'always'
+  expiresAt?: number
+  createdAt: number
+  resolvedAt?: number
+}
+
 export interface ContextToken {
   token: string
   summary: string
   expiresAt: number
   createdAt: number
   query?: string
+  appId?: string
+  scope?: string
+  revokedAt?: number
+  sourceIds?: string[]
+}
+
+export interface ContextAccessLog {
+  id: string
+  appId: string
+  action: 'permission_requested' | 'permission_granted' | 'token_issued' | 'token_retrieved' | 'context_query' | 'context_inject' | 'memory_search' | 'denied' | 'token_revoked'
+  tokenHash?: string
+  sourceIds: string[]
+  query?: string
+  scope?: string
+  success: boolean
+  details?: string
+  createdAt: number
 }
 
 export interface ContextPermission {

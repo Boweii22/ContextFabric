@@ -43,6 +43,11 @@ declare global {
         list: () => Promise<unknown>
         revoke: (token: string) => Promise<unknown>
         revokeAll: () => Promise<unknown>
+        auditLog: (limit?: number) => Promise<unknown>
+      }
+      permissions: {
+        requests: (limit?: number) => Promise<unknown>
+        resolve: (id: string, decision: 'one_hour' | 'session' | 'always' | 'deny') => Promise<unknown>
       }
       on: (channel: string, listener: (...args: unknown[]) => void) => () => void
       off: (channel: string, listener: (...args: unknown[]) => void) => void

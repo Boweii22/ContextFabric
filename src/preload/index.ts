@@ -64,6 +64,13 @@ const api = {
     list: () => ipcRenderer.invoke('tokens:list'),
     revoke: (token: string) => ipcRenderer.invoke('tokens:revoke', token),
     revokeAll: () => ipcRenderer.invoke('tokens:revoke-all'),
+    auditLog: (limit?: number) => ipcRenderer.invoke('tokens:audit-log', limit),
+  },
+
+  permissions: {
+    requests: (limit?: number) => ipcRenderer.invoke('permissions:requests', limit),
+    resolve: (id: string, decision: 'one_hour' | 'session' | 'always' | 'deny') =>
+      ipcRenderer.invoke('permissions:resolve', id, decision),
   },
 
   // Events

@@ -1,9 +1,7 @@
 import express from 'express'
 import type { Request, Response, NextFunction } from 'express'
-import { randomBytes } from 'crypto'
 import type { DatabaseService } from '../services/database'
 import type { OllamaService } from '../services/ollama'
-import { setToken, getToken } from './tokenStore'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +38,8 @@ function permissionMiddleware(db: DatabaseService) {
 
     const settings = db.getAllSettings()
     const allowedApps = (settings.allowedApps as Record<string, boolean>) || {}
-    const appAllowed = allowedApps[appId] ?? (appId !== 'external')
+    const activeGrant = db.getActiveAppGrant(appId)
+    const appAllowed = Boolean(activeGrant) || (allowedApps[appId] ?? (appId !== 'external'))
 
     if (!appAllowed) {
       res.status(403).json({ error: `App "${appId}" is not allowed. Enable it in ContextFabric → Permissions.` })
@@ -52,18 +51,22 @@ function permissionMiddleware(db: DatabaseService) {
     }>
 
     if (Object.keys(perms).length === 0) {
-      pr.allowedSourceIds = null
+      pr.allowedSourceIds = activeGrant?.sourceIds.length ? activeGrant.sourceIds : null
       next()
       return
     }
 
-    pr.allowedSourceIds = Object.entries(perms)
+    const allowedBySourcePerms = Object.entries(perms)
       .filter(([, p]) => {
         if (appId === 'vscode') return p.allowVSCode
         if (appId === 'claude' || appId === 'global') return p.allowGlobal
         return p.allowExternal
       })
       .map(([id]) => id)
+
+    pr.allowedSourceIds = activeGrant?.sourceIds.length
+      ? filterByPermissions(activeGrant.sourceIds, allowedBySourcePerms)
+      : allowedBySourcePerms
 
     next()
   }
@@ -89,9 +92,47 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
 
   // Token retrieval — auth'd by token value, no app header required
   apiRouter.get('/token/:tokenId', (req: Request, res: Response) => {
-    const entry = getToken(req.params.tokenId)
+    const appId = ((req.headers['x-contextfabric-app'] as string) || 'external').toLowerCase()
+    const entry = db.getContextToken(req.params.tokenId, appId)
     if (!entry) { res.status(404).json({ error: 'Token not found or expired' }); return }
-    res.json({ context: entry.context, summary: entry.summary, expiresAt: new Date(entry.expiresAt).toISOString() })
+    res.json({
+      context: entry.context,
+      summary: entry.summary,
+      expiresAt: new Date(entry.expiresAt).toISOString(),
+      scope: entry.scope,
+      sourceIds: entry.sourceIds,
+    })
+  })
+
+  // Permission request flow - intentionally registered before permission middleware.
+  apiRouter.post('/permission/request', (req: Request, res: Response) => {
+    try {
+      const appId = ((req.headers['x-contextfabric-app'] as string) || req.body?.appId || 'external').toLowerCase()
+      const { scopes = ['context'], sourceIds = [], reason } = req.body as {
+        scopes?: string[]
+        sourceIds?: string[]
+        reason?: string
+      }
+      const request = db.createPermissionRequest({
+        appId,
+        requestedScopes: Array.isArray(scopes) ? scopes : ['context'],
+        requestedSourceIds: Array.isArray(sourceIds) ? sourceIds : [],
+        reason,
+      })
+      res.status(202).json({
+        requestId: request.id,
+        status: request.status,
+        appId: request.appId,
+        message: 'Permission request sent to ContextFabric. Approve it in the Permissions screen.',
+        pollUrl: `/api/permission/request/${request.id}`,
+      })
+    } catch (err) { res.status(500).json({ error: String(err) }) }
+  })
+
+  apiRouter.get('/permission/request/:id', (req: Request, res: Response) => {
+    const request = db.getPermissionRequest(req.params.id)
+    if (!request) { res.status(404).json({ error: 'Permission request not found' }); return }
+    res.json(request)
   })
 
   // All other /api routes require app permission
@@ -144,6 +185,16 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
         .filter(r => r.score > 0)
         .sort((a, b) => b.score - a.score)
         .slice(0, limit)
+
+      db.logContextAccess({
+        appId: pr.appId,
+        action: 'context_query',
+        sourceIds: [...new Set(scored.map(r => r.node.sourceId))],
+        query,
+        scope: 'context',
+        success: true,
+        details: `${scored.length} result(s) returned`,
+      })
 
       res.json({
         query,
@@ -234,6 +285,16 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
         })
         .filter((r): r is { node: NonNullable<ReturnType<typeof db.getNode>>; score: number } => r !== null)
         .slice(0, limit)
+
+      db.logContextAccess({
+        appId: pr.appId,
+        action: 'memory_search',
+        sourceIds: [...new Set(hits.map(r => r.node.sourceId))],
+        query,
+        scope: semantic ? 'semantic-search' : 'keyword-search',
+        success: true,
+        details: `${hits.length} result(s) returned`,
+      })
 
       res.json({
         query, mode: semantic ? 'semantic' : 'keyword',
@@ -329,6 +390,15 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
 
       if (contextBlock.length > charLimit) contextBlock = contextBlock.substring(0, charLimit) + '\n\n[context truncated]'
 
+      db.logContextAccess({
+        appId: pr.appId,
+        action: 'context_inject',
+        sourceIds: sourceId ? [sourceId] : [],
+        scope,
+        success: true,
+        details: `${contextBlock.length} character(s) returned`,
+      })
+
       res.json({ scope, context: contextBlock, charCount: contextBlock.length, estimatedTokens: Math.round(contextBlock.length / 4), meta })
     } catch (err) { res.status(500).json({ error: String(err) }) }
   })
@@ -336,10 +406,14 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
   // ── POST /api/token ─────────────────────────────────────────────────────────
   apiRouter.post('/token', (req: Request, res: Response) => {
     try {
+      const pr = req as PermRequest
       const { query, ttlSeconds = 3600 } = req.body as { query?: string; ttlSeconds?: number }
       const nodes = query
-        ? db.getNodes(500).filter(n => query.toLowerCase().split(/\s+/).some(w => `${n.title} ${n.content}`.toLowerCase().includes(w))).slice(0, 10)
-        : db.getNodes(10)
+        ? db.getNodes(500)
+            .filter(n => pr.allowedSourceIds === null || pr.allowedSourceIds.includes(n.sourceId))
+            .filter(n => query.toLowerCase().split(/\s+/).some(w => `${n.title} ${n.content}`.toLowerCase().includes(w)))
+            .slice(0, 10)
+        : db.getNodes(10).filter(n => pr.allowedSourceIds === null || pr.allowedSourceIds.includes(n.sourceId))
 
       const decisions = db.getTimeline(5)
       const summary = nodes.map(n => `${n.title}: ${(n.summary || n.content).substring(0, 100)}`).join('\n')
@@ -350,11 +424,27 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
         decisions.length > 0 ? `\nKey decisions:\n${decisions.map(d => `- ${d.title}`).join('\n')}` : '',
       ].filter(Boolean).join('\n')
 
-      const token = randomBytes(24).toString('base64url')
-      const expiresAt = Date.now() + ttlSeconds * 1000
-      setToken(token, { context, summary: summary.substring(0, 200), expiresAt, createdAt: Date.now(), query })
+      const created = db.createContextToken({
+        context,
+        summary: summary.substring(0, 200),
+        query,
+        appId: pr.appId,
+        scope: query ? 'query-context' : 'global-context',
+        sourceIds: [...new Set(nodes.map(n => n.sourceId))],
+        ttlSeconds,
+      })
 
-      res.json({ token, expiresAt: new Date(expiresAt).toISOString(), ttlSeconds, nodeCount: nodes.length, summary: summary.substring(0, 200), retrieveUrl: `http://localhost:${port}/api/token/${token}` })
+      res.json({
+        token: created.token,
+        expiresAt: new Date(created.expiresAt).toISOString(),
+        ttlSeconds,
+        nodeCount: nodes.length,
+        summary: created.summary,
+        scope: created.scope,
+        sourceIds: created.sourceIds,
+        publicKey: db.getContextPublicKey(),
+        retrieveUrl: `http://localhost:${port}/api/token/${created.token}`,
+      })
     } catch (err) { res.status(500).json({ error: String(err) }) }
   })
 

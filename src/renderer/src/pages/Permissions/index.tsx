@@ -2,26 +2,48 @@ import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Shield, Lock, Eye, EyeOff, Code2, Globe, Info,
-  Key, Trash2, Clock, RefreshCw, AlertTriangle, CheckCircle2
+  Key, Trash2, Clock, RefreshCw, AlertTriangle, CheckCircle2, X
 } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/utils'
-import type { ContextPermission, ContextToken } from '../../../../shared/types'
+import type { ContextAccessLog, ContextPermission, ContextPermissionRequest, ContextToken } from '../../../../shared/types'
 
 export default function PermissionsPage(): React.ReactElement {
   const { sources, settings, setSettings } = useAppStore()
   const [tokens, setTokens] = useState<ContextToken[]>([])
+  const [accessLogs, setAccessLogs] = useState<ContextAccessLog[]>([])
+  const [pendingRequests, setPendingRequests] = useState<ContextPermissionRequest[]>([])
   const [revoking, setRevoking] = useState<string | null>(null)
   const [encryptionSaving, setEncryptionSaving] = useState(false)
 
-  useEffect(() => { loadTokens() }, [])
+  useEffect(() => {
+    loadTokens()
+    loadPermissionRequests()
+    const timer = window.setInterval(loadPermissionRequests, 2500)
+    return () => window.clearInterval(timer)
+  }, [])
 
   async function loadTokens() {
     try {
       const list = await api.tokens.list() as ContextToken[]
       setTokens(list)
+      const logs = await api.tokens.auditLog(50) as ContextAccessLog[]
+      setAccessLogs(logs)
     } catch { setTokens([]) }
+  }
+
+  async function loadPermissionRequests() {
+    try {
+      const requests = await api.permissions.requests(20) as ContextPermissionRequest[]
+      setPendingRequests(requests)
+    } catch { setPendingRequests([]) }
+  }
+
+  async function resolvePermissionRequest(id: string, decision: 'one_hour' | 'session' | 'always' | 'deny') {
+    await api.permissions.resolve(id, decision)
+    await loadPermissionRequests()
+    await loadTokens()
   }
 
   async function updatePermission(sourceId: string, updates: Partial<ContextPermission>) {
@@ -93,6 +115,15 @@ export default function PermissionsPage(): React.ReactElement {
         </motion.div>
 
         <div className="space-y-4">
+          <AnimatePresence>
+            {pendingRequests[0] && (
+              <PermissionRequestDialog
+                request={pendingRequests[0]}
+                sources={sources}
+                onResolve={resolvePermissionRequest}
+              />
+            )}
+          </AnimatePresence>
 
           {/* Per-app global access */}
           <section className="surface-card p-5">
@@ -257,6 +288,52 @@ export default function PermissionsPage(): React.ReactElement {
             )}
           </section>
 
+          {/* Access audit log */}
+          <section className="surface-card p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-cyan-400" />
+                <h2 className="text-sm font-semibold text-white">Context Access Log</h2>
+                <span className="text-2xs px-1.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400">
+                  {accessLogs.length}
+                </span>
+              </div>
+              <button onClick={loadTokens}
+                className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-white/[0.04] transition-all">
+                <RefreshCw className="w-3 h-3" /> Refresh
+              </button>
+            </div>
+
+            {accessLogs.length === 0 ? (
+              <div className="py-6 text-center">
+                <Clock className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+                <p className="text-sm text-slate-600">No context access recorded yet</p>
+                <p className="text-xs text-slate-700 mt-1">API requests and token events will appear here.</p>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-72 overflow-y-auto scrollbar-none">
+                {accessLogs.map(log => (
+                  <div key={log.id} className="flex items-start gap-3 p-3 rounded-xl bg-cosmos-700/30 border border-white/[0.05]">
+                    <div className={cn(
+                      'w-1.5 h-1.5 rounded-full mt-2 shrink-0',
+                      log.success ? 'bg-emerald-400' : 'bg-red-400'
+                    )} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-medium text-slate-300">{log.action.replace(/_/g, ' ')}</span>
+                        <span className="text-2xs text-slate-600">{log.appId}</span>
+                        <span className="text-2xs text-slate-700 ml-auto">{new Date(log.createdAt).toLocaleTimeString()}</span>
+                      </div>
+                      <p className="text-xs text-slate-500 line-clamp-2">
+                        {log.details || log.query || log.scope || `${log.sourceIds.length} source${log.sourceIds.length === 1 ? '' : 's'}`}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
         </div>
       </div>
     </div>
@@ -275,6 +352,127 @@ function PermissionRow({ icon, label, desc, enabled, onChange }: {
       </div>
       <ToggleSwitch enabled={enabled} onChange={onChange} />
     </div>
+  )
+}
+
+function PermissionRequestDialog({
+  request,
+  sources,
+  onResolve,
+}: {
+  request: ContextPermissionRequest
+  sources: Array<{ id: string; name: string }>
+  onResolve: (id: string, decision: 'one_hour' | 'session' | 'always' | 'deny') => Promise<void>
+}) {
+  const [resolving, setResolving] = useState<string | null>(null)
+  const requestedSources = request.requestedSourceIds.length > 0
+    ? request.requestedSourceIds.map(id => sources.find(s => s.id === id)?.name || id)
+    : ['All permitted sources']
+
+  async function handle(decision: 'one_hour' | 'session' | 'always' | 'deny') {
+    setResolving(decision)
+    try {
+      await onResolve(request.id, decision)
+    } finally {
+      setResolving(null)
+    }
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center px-4"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 16 }}
+        className="w-full max-w-lg rounded-3xl bg-cosmos-800 border border-white/[0.1] shadow-elevated p-6"
+      >
+        <div className="flex items-start gap-4 mb-5">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-6 h-6 text-indigo-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-2xs text-indigo-400 uppercase tracking-wider font-semibold mb-1">
+              Context access request
+            </div>
+            <h3 className="text-lg font-semibold text-white">
+              {request.appId} wants to read your context
+            </h3>
+            <p className="text-sm text-slate-500 mt-1">
+              Review the requested access and choose how long this app should be trusted.
+            </p>
+          </div>
+          <button
+            onClick={() => handle('deny')}
+            disabled={Boolean(resolving)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:text-white hover:bg-white/[0.06] transition-all"
+            title="Deny request"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3 mb-6">
+          <div className="rounded-2xl bg-cosmos-700/45 border border-white/[0.06] p-4">
+            <div className="text-2xs text-slate-600 uppercase tracking-wider font-medium mb-2">Requested scopes</div>
+            <div className="flex flex-wrap gap-1.5">
+              {request.requestedScopes.map(scope => (
+                <span key={scope} className="text-xs px-2 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                  {scope}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-cosmos-700/45 border border-white/[0.06] p-4">
+            <div className="text-2xs text-slate-600 uppercase tracking-wider font-medium mb-2">Sources</div>
+            <p className="text-sm text-slate-400">{requestedSources.join(', ')}</p>
+          </div>
+
+          {request.reason && (
+            <div className="rounded-2xl bg-cosmos-700/45 border border-white/[0.06] p-4">
+              <div className="text-2xs text-slate-600 uppercase tracking-wider font-medium mb-2">Reason</div>
+              <p className="text-sm text-slate-400">{request.reason}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => handle('one_hour')}
+            disabled={Boolean(resolving)}
+            className="py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition-all"
+          >
+            {resolving === 'one_hour' ? 'Granting...' : 'Grant 1 hour'}
+          </button>
+          <button
+            onClick={() => handle('session')}
+            disabled={Boolean(resolving)}
+            className="py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-sm font-medium transition-all"
+          >
+            {resolving === 'session' ? 'Granting...' : 'Grant session'}
+          </button>
+          <button
+            onClick={() => handle('always')}
+            disabled={Boolean(resolving)}
+            className="py-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15 disabled:opacity-50 text-emerald-300 text-sm font-medium transition-all"
+          >
+            {resolving === 'always' ? 'Granting...' : 'Always allow'}
+          </button>
+          <button
+            onClick={() => handle('deny')}
+            disabled={Boolean(resolving)}
+            className="py-2.5 rounded-xl border border-red-500/25 bg-red-500/10 hover:bg-red-500/15 disabled:opacity-50 text-red-300 text-sm font-medium transition-all"
+          >
+            {resolving === 'deny' ? 'Denying...' : 'Deny'}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   )
 }
 

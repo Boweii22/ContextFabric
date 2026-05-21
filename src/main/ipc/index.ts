@@ -4,7 +4,6 @@ import type { DatabaseService } from '../services/database'
 import type { OllamaService } from '../services/ollama'
 import { SearchService } from '../services/search'
 import { IngestionService } from '../services/ingestion'
-import { listTokens, revokeToken, revokeAll } from '../api/tokenStore'
 import type { DataSource, AIQueryResult, AppSettings } from '../../shared/types'
 
 export function registerIpcHandlers(
@@ -340,9 +339,14 @@ export function registerIpcHandlers(
 
   // === PERMISSIONS / TOKENS ===
 
-  ipcMain.handle('tokens:list', () => listTokens())
-  ipcMain.handle('tokens:revoke', (_, token: string) => revokeToken(token))
-  ipcMain.handle('tokens:revoke-all', () => { revokeAll(); return true })
+  ipcMain.handle('tokens:list', () => db.listContextTokens())
+  ipcMain.handle('tokens:revoke', (_, token: string) => db.revokeContextToken(token))
+  ipcMain.handle('tokens:revoke-all', () => { db.revokeAllContextTokens(); return true })
+  ipcMain.handle('tokens:audit-log', (_, limit = 100) => db.getContextAccessLogs(limit))
+  ipcMain.handle('permissions:requests', (_, limit = 20) => db.getPendingPermissionRequests(limit))
+  ipcMain.handle('permissions:resolve', (_, id: string, decision: 'one_hour' | 'session' | 'always' | 'deny') =>
+    db.resolvePermissionRequest(id, decision)
+  )
 
   // Restore file watchers for all ready sources (after app restart)
   ingestion.watchAllSources()
