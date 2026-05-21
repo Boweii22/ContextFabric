@@ -4,6 +4,8 @@ import {
   parseContextExtraction,
   type ContextExtractionResult,
 } from '../../shared/contextExtraction'
+import { buildConflictDetectionPrompt, parseConflictDetection } from '../../shared/conflictDetection'
+import type { MemoryConflict, MemoryNode } from '../../shared/types'
 
 interface OllamaGenerateResponse {
   response: string
@@ -676,6 +678,25 @@ Return corrected JSON only:`
     } catch (error) {
       if (error instanceof Error && error.message === 'enrichment_aborted') throw error
       return { nodes: [] }
+    }
+  }
+
+  async detectNodeConflict(existing: MemoryNode, incoming: MemoryNode): Promise<Omit<MemoryConflict, 'id' | 'existingNodeId' | 'newNodeId' | 'existingSummary' | 'newSummary' | 'status' | 'createdAt' | 'resolvedAt'> | null> {
+    try {
+      const response = await this.generate(buildConflictDetectionPrompt(existing, incoming), 30000, this.enrichmentController?.signal, 180)
+      const parsed = parseConflictDetection(response)
+      if (!parsed?.conflict && !parsed?.maybe) return null
+      if ((parsed.confidence || 0) < 0.5 && !parsed.maybe) return null
+      return {
+        type: parsed.type,
+        maybe: parsed.maybe,
+        confidence: parsed.confidence,
+        severity: parsed.severity,
+        reason: parsed.reason || 'Gemma detected a possible memory conflict.',
+        suggestedResolution: parsed.suggestedResolution,
+      }
+    } catch {
+      return null
     }
   }
 

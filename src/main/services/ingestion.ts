@@ -7,7 +7,7 @@ import chokidar, { FSWatcher } from 'chokidar'
 import { app } from 'electron'
 import type { DatabaseService } from './database'
 import type { OllamaService } from './ollama'
-import type { MemoryNode, MemoryEdge, DataSource, Entity, ProcessingStatus } from '../../shared/types'
+import type { MemoryNode, MemoryEdge, DataSource, Entity, ProcessingStatus, MemoryConflict } from '../../shared/types'
 import type { ExtractedContextNode } from '../../shared/contextExtraction'
 
 type StatusCallback = (status: ProcessingStatus) => void
@@ -613,6 +613,7 @@ export class IngestionService {
     // 2. Bulk save all nodes + fast hash embeddings in one transaction pass
     this.db.batchUpsertNodes(savedNodes)
     this.saveEntitiesBulk(savedNodes)
+    this.detectAndSaveConflicts(deterministicProfileNodes)
 
     // 3. Fast hash embeddings — all in a single DB transaction, zero HTTP calls
     const embItems = savedNodes.map(node => ({
@@ -708,6 +709,58 @@ export class IngestionService {
         metadata: { extractor: node.metadata.extractor || 'deterministic-profile' },
       })
     }
+  }
+
+  private detectAndSaveConflicts(newNodes: MemoryNode[]): void {
+    const checkedTypes = new Set(['preference', 'style', 'decision', 'project'])
+    const existing = this.db.getNodes(1500).filter(node => checkedTypes.has(node.type))
+    for (const incoming of newNodes.filter(node => checkedTypes.has(node.type))) {
+      for (const old of existing) {
+        if (old.id === incoming.id || (old.sourceId === incoming.sourceId && old.title === incoming.title)) continue
+        const conflict = this.detectDeterministicConflict(old, incoming)
+        if (conflict) this.db.upsertConflict(conflict)
+      }
+    }
+  }
+
+  private detectDeterministicConflict(existing: MemoryNode, incoming: MemoryNode): MemoryConflict | null {
+    const oldText = `${existing.title} ${existing.summary || existing.content}`.toLowerCase()
+    const newText = `${incoming.title} ${incoming.summary || incoming.content}`.toLowerCase()
+    const oldSubject = this.conflictSubject(oldText)
+    const newSubject = this.conflictSubject(newText)
+    if (!oldSubject || !newSubject || oldSubject !== newSubject) return null
+    const oldPolarity = this.conflictPolarity(oldText)
+    const newPolarity = this.conflictPolarity(newText)
+    if (oldPolarity === 0 || newPolarity === 0 || oldPolarity === newPolarity) return null
+    const maybe = !/\b(always|never|must|decided|chose|avoid|prefer|preference)\b/i.test(`${existing.content} ${incoming.content}`)
+    return {
+      id: this.stableId(existing.id, incoming.id, 'conflict'),
+      existingNodeId: existing.id,
+      newNodeId: incoming.id,
+      type: maybe ? 'tension' : 'contradiction',
+      maybe,
+      confidence: maybe ? 0.58 : 0.82,
+      severity: existing.type === 'decision' || incoming.type === 'decision' ? 'high' : maybe ? 'medium' : 'high',
+      reason: `Existing memory and new memory make opposing claims about ${oldSubject}.`,
+      existingSummary: (existing.summary || existing.content).slice(0, 220),
+      newSummary: (incoming.summary || incoming.content).slice(0, 220),
+      suggestedResolution: maybe ? 'review' : 'accept_new',
+      status: 'open',
+      createdAt: Date.now(),
+    }
+  }
+
+  private conflictSubject(text: string): string | null {
+    const subjects = ['cloud', 'local', 'offline', 'gemma', 'ollama', 'sqlite', 'postgres', 'mongodb', 'supabase', 'verbose', 'concise', 'emoji', 'typescript', 'python']
+    return subjects.find(subject => text.includes(subject)) || null
+  }
+
+  private conflictPolarity(text: string): number {
+    const positive = /\b(prefer|use|uses|using|chose|choose|always|must|keep|local-first|offline)\b/i.test(text)
+    const negative = /\b(avoid|reject|rejected|never|do not|don't|stop|stopped|switched from|moved away from)\b/i.test(text)
+    if (positive && !negative) return 1
+    if (negative && !positive) return -1
+    return 0
   }
 
   private extractProjectName(text: string, source: DataSource): string | null {
@@ -942,6 +995,7 @@ export class IngestionService {
 
         this.db.batchUpsertNodes(derivedNodes)
         this.saveEntitiesBulk(derivedNodes)
+        this.detectAndSaveConflicts(derivedNodes)
 
         for (const derived of derivedNodes) {
           this.db.upsertEdge({

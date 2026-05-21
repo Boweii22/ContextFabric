@@ -14,6 +14,7 @@ import GemmaEvidencePage from './pages/GemmaEvidence'
 import SettingsPage from './pages/Settings'
 import PermissionsPage from './pages/Permissions'
 import HelpPage from './pages/Help'
+import ConflictsPage from './pages/Conflicts'
 import type {
   DataSource, Stats, AppSettings, ProcessingStatus,
   Entity, TimelineEvent, AIQueryResult
@@ -112,6 +113,7 @@ export default function App(): React.ReactElement {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="permissions" element={<PermissionsPage />} />
           <Route path="help" element={<HelpPage />} />
+          <Route path="conflicts" element={<ConflictsPage />} />
         </Route>
         <Route
           path="*"

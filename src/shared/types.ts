@@ -24,6 +24,23 @@ export interface MemoryEdge {
   metadata: Record<string, unknown>
 }
 
+export interface MemoryConflict {
+  id: string
+  existingNodeId: string
+  newNodeId: string
+  type: 'contradiction' | 'tension' | 'duplicate'
+  maybe: boolean
+  confidence: number
+  severity: 'low' | 'medium' | 'high'
+  reason: string
+  existingSummary: string
+  newSummary: string
+  suggestedResolution: 'accept_new' | 'keep_existing' | 'keep_both' | 'review'
+  status: 'open' | 'accepted_new' | 'kept_existing' | 'kept_both' | 'dismissed'
+  createdAt: number
+  resolvedAt?: number
+}
+
 export interface DataSource {
   id: string
   name: string

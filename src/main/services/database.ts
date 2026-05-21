@@ -13,7 +13,7 @@ import { v4 as uuidv4 } from 'uuid'
 import type {
   MemoryNode, MemoryEdge, DataSource, Entity,
   TimelineEvent, AppSettings, Stats, AIQueryResult, ContextToken, ContextAccessLog,
-  AppAccessGrant, ContextPermissionRequest, CRSQLiteChange, CRSQLiteStatus, SyncPeer
+  AppAccessGrant, ContextPermissionRequest, CRSQLiteChange, CRSQLiteStatus, SyncPeer, MemoryConflict
 } from '../../shared/types'
 
 // ─── CR-SQLite Readiness ─────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ import type {
 //   The sync_changes table maps directly to crsql_changes format
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 6
+const SCHEMA_VERSION = 7
 const CRR_TABLES = ['memory_nodes', 'memory_edges', 'data_sources', 'entities', 'timeline_events', 'query_history']
 
 export class DatabaseService {
@@ -417,6 +417,30 @@ export class DatabaseService {
         DROP TABLE IF EXISTS nodes_fts;
       `)
       this.setSchemaVersion(6)
+    }
+
+    if (currentVersion < 7) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_conflicts (
+          id                   TEXT PRIMARY KEY,
+          existing_node_id     TEXT NOT NULL,
+          new_node_id          TEXT NOT NULL,
+          type                 TEXT NOT NULL,
+          maybe                INTEGER NOT NULL DEFAULT 0,
+          confidence           REAL NOT NULL DEFAULT 0,
+          severity             TEXT NOT NULL DEFAULT 'low',
+          reason               TEXT NOT NULL,
+          existing_summary     TEXT NOT NULL,
+          new_summary          TEXT NOT NULL,
+          suggested_resolution TEXT NOT NULL DEFAULT 'review',
+          status               TEXT NOT NULL DEFAULT 'open',
+          created_at           INTEGER NOT NULL,
+          resolved_at          INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_conflicts_status ON memory_conflicts(status, created_at DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_conflicts_pair ON memory_conflicts(existing_node_id, new_node_id);
+      `)
+      this.setSchemaVersion(7)
     }
 
     this.initializeDefaultSettings()
@@ -1180,6 +1204,52 @@ export class DatabaseService {
   }
 
   // ─── SOURCES ───────────────────────────────────────────────────────────────
+
+  upsertConflict(conflict: MemoryConflict): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO memory_conflicts
+        (id, existing_node_id, new_node_id, type, maybe, confidence, severity,
+         reason, existing_summary, new_summary, suggested_resolution, status, created_at, resolved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      conflict.id, conflict.existingNodeId, conflict.newNodeId, conflict.type,
+      conflict.maybe ? 1 : 0, conflict.confidence, conflict.severity,
+      this.encrypt(conflict.reason), this.encrypt(conflict.existingSummary),
+      this.encrypt(conflict.newSummary), conflict.suggestedResolution,
+      conflict.status, conflict.createdAt, conflict.resolvedAt || null
+    )
+  }
+
+  getConflicts(status: MemoryConflict['status'] | 'all' = 'open', limit = 100): MemoryConflict[] {
+    const rows = status === 'all'
+      ? this.db.prepare('SELECT * FROM memory_conflicts ORDER BY created_at DESC LIMIT ?').all(limit) as Record<string, unknown>[]
+      : this.db.prepare('SELECT * FROM memory_conflicts WHERE status = ? ORDER BY created_at DESC LIMIT ?').all(status, limit) as Record<string, unknown>[]
+    return rows.map(row => this.rowToConflict(row))
+  }
+
+  resolveConflict(id: string, status: MemoryConflict['status']): boolean {
+    this.db.prepare('UPDATE memory_conflicts SET status = ?, resolved_at = ? WHERE id = ?').run(status, Date.now(), id)
+    return true
+  }
+
+  private rowToConflict(row: Record<string, unknown>): MemoryConflict {
+    return {
+      id: row['id'] as string,
+      existingNodeId: row['existing_node_id'] as string,
+      newNodeId: row['new_node_id'] as string,
+      type: row['type'] as MemoryConflict['type'],
+      maybe: Boolean(row['maybe']),
+      confidence: row['confidence'] as number,
+      severity: row['severity'] as MemoryConflict['severity'],
+      reason: this.decrypt(row['reason'] as string),
+      existingSummary: this.decrypt(row['existing_summary'] as string),
+      newSummary: this.decrypt(row['new_summary'] as string),
+      suggestedResolution: row['suggested_resolution'] as MemoryConflict['suggestedResolution'],
+      status: row['status'] as MemoryConflict['status'],
+      createdAt: row['created_at'] as number,
+      resolvedAt: row['resolved_at'] as number | undefined,
+    }
+  }
 
   upsertSource(source: DataSource): void {
     const existing = this.db.prepare(

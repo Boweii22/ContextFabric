@@ -69,3 +69,25 @@ npm run benchmark:extraction
 ## Design Tradeoffs
 
 The first sync path stays fast by saving raw chunks and deterministic hash embeddings immediately. Gemma 4 extraction runs during background enrichment. That makes the app usable right away while still upgrading the graph with real typed context nodes when the local model is available.
+
+## Conflict Detection
+
+The conflict detector prompt is defined in [conflictDetection.ts](src/shared/conflictDetection.ts) as `CONFLICT_DETECTION_PROMPT`.
+
+It compares one existing memory node with one new memory node and returns JSON with:
+
+- `conflict`
+- `maybe`
+- `confidence`
+- `type`
+- `severity`
+- `reason`
+- `suggestedResolution`
+
+The `maybe` flag is required because personal context often changes by project, time, or scope. For example, "prefer concise answers" and "prefer detailed implementation notes" may be a true conflict, or they may both be valid in different situations. ContextFabric stores those uncertain cases for user review instead of deleting memory automatically.
+
+Run:
+
+```bash
+npm run test:conflicts
+```

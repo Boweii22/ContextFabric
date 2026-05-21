@@ -53,6 +53,10 @@ declare global {
         requests: (limit?: number) => Promise<unknown>
         resolve: (id: string, decision: 'one_hour' | 'session' | 'always' | 'deny') => Promise<unknown>
       }
+      conflicts: {
+        list: (status?: 'open' | 'all', limit?: number) => Promise<unknown>
+        resolve: (id: string, status: 'accepted_new' | 'kept_existing' | 'kept_both' | 'dismissed') => Promise<unknown>
+      }
       on: (channel: string, listener: (...args: unknown[]) => void) => () => void
       off: (channel: string, listener: (...args: unknown[]) => void) => void
     }

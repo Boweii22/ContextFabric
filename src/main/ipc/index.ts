@@ -407,6 +407,13 @@ export function registerIpcHandlers(
     db.resolvePermissionRequest(id, decision)
   )
 
+  ipcMain.handle('conflicts:list', (_, status: 'open' | 'all' = 'open', limit = 100) =>
+    db.getConflicts(status, limit)
+  )
+  ipcMain.handle('conflicts:resolve', (_, id: string, status: 'accepted_new' | 'kept_existing' | 'kept_both' | 'dismissed') =>
+    db.resolveConflict(id, status)
+  )
+
   // Restore file watchers for all ready sources (after app restart)
   ingestion.watchAllSources()
 

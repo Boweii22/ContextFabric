@@ -78,6 +78,12 @@ const api = {
       ipcRenderer.invoke('permissions:resolve', id, decision),
   },
 
+  conflicts: {
+    list: (status?: 'open' | 'all', limit?: number) => ipcRenderer.invoke('conflicts:list', status, limit),
+    resolve: (id: string, status: 'accepted_new' | 'kept_existing' | 'kept_both' | 'dismissed') =>
+      ipcRenderer.invoke('conflicts:resolve', id, status),
+  },
+
   // Events
   on: (channel: string, listener: (...args: unknown[]) => void) => {
     ipcRenderer.on(channel, (_, ...args) => listener(...args))
