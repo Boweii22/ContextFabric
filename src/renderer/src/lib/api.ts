@@ -19,6 +19,7 @@ declare global {
         deleted: (limit?: number) => Promise<unknown>
         restoreNode: (id: string) => Promise<unknown>
         purgeExpired: () => Promise<unknown>
+        quickExtract: (text: string, title?: string) => Promise<unknown>
       }
       sources: {
         list: () => Promise<unknown>

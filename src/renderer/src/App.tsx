@@ -16,6 +16,7 @@ import PermissionsPage from './pages/Permissions'
 import HelpPage from './pages/Help'
 import ConflictsPage from './pages/Conflicts'
 import RecoveryPage from './pages/Recovery'
+import QuickExtractPage from './pages/QuickExtract'
 import type {
   DataSource, Stats, AppSettings, ProcessingStatus,
   Entity, TimelineEvent, AIQueryResult
@@ -110,6 +111,7 @@ export default function App(): React.ReactElement {
           <Route path="timeline" element={<TimelinePage />} />
           <Route path="query" element={<QueryPage />} />
           <Route path="sources" element={<SourcesPage />} />
+          <Route path="extract" element={<QuickExtractPage />} />
           <Route path="gemma" element={<GemmaEvidencePage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="permissions" element={<PermissionsPage />} />

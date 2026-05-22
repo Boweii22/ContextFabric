@@ -30,6 +30,8 @@ const api = {
       ipcRenderer.invoke('memory:restore-node', id),
     purgeExpired: () =>
       ipcRenderer.invoke('memory:purge-expired'),
+    quickExtract: (text: string, title?: string) =>
+      ipcRenderer.invoke('memory:quick-extract', text, title),
   },
 
   // Sources

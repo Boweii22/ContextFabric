@@ -5,7 +5,7 @@ import type { OllamaService } from '../services/ollama'
 import { SearchService } from '../services/search'
 import { IngestionService } from '../services/ingestion'
 import type { SyncService } from '../services/sync'
-import type { DataSource, AIQueryResult, AppSettings } from '../../shared/types'
+import type { DataSource, AIQueryResult, AppSettings, MemoryNode, MemoryEdge } from '../../shared/types'
 
 export function registerIpcHandlers(
   db: DatabaseService,
@@ -30,6 +30,102 @@ export function registerIpcHandlers(
       }))
     }
     return await search.hybridSearch(query, limit)
+  })
+
+  ipcMain.handle('memory:quick-extract', async (_, text: string, title?: string) => {
+    const content = String(text || '').trim()
+    if (content.length < 20) throw new Error('Paste at least 20 characters to extract.')
+
+    const now = Date.now()
+    const sourceId = uuidv4()
+    const source: DataSource = {
+      id: sourceId,
+      name: title?.trim() || `Quick Extract ${new Date(now).toLocaleString()}`,
+      type: 'markdown',
+      path: `quick-extract://${sourceId}`,
+      status: 'ready',
+      lastSynced: now,
+      nodeCount: 0,
+      color: '#14B8A6',
+      icon: 'sparkles',
+      enabled: true,
+      metadata: { quickExtract: true },
+    }
+
+    const rawNode: MemoryNode = {
+      id: uuidv4(),
+      title: source.name,
+      content,
+      type: 'note',
+      sourceId,
+      sourceName: source.name,
+      sourceType: source.type,
+      timestamp: now,
+      confidence: 1,
+      tags: ['quick-extract', 'raw'],
+      entities: ollama.simpleEntityExtract(content).map(entity => entity.name),
+      summary: content.slice(0, 220),
+      metadata: { quickExtract: true },
+    }
+
+    const extraction = await ollama.extractContextNodes(content, inferQuickInputType(content))
+    const extractedNodes: MemoryNode[] = extraction.nodes.map((node, index) => ({
+      id: uuidv4(),
+      title: node.title,
+      content: [
+        node.summary,
+        `Evidence: ${node.evidence}`,
+        node.metadata.reasoning ? `Reasoning: ${node.metadata.reasoning}` : '',
+      ].filter(Boolean).join('\n'),
+      type: node.type,
+      sourceId,
+      sourceName: source.name,
+      sourceType: source.type,
+      timestamp: now,
+      confidence: node.confidence,
+      tags: [...new Set(['quick-extract', node.type, ...node.tags])],
+      entities: node.entities,
+      summary: node.summary,
+      metadata: {
+        ...node.metadata,
+        confidence: node.confidence,
+        evidence: node.evidence,
+        extractedFromNodeId: rawNode.id,
+        extractionSchema: 'contextfabric.extraction.v1',
+        extractor: 'gemma4',
+        quickExtractIndex: index,
+      },
+    }))
+
+    const fallbackNodes = extractedNodes.length > 0 ? [] : buildFallbackQuickNodes(content, rawNode, source)
+    const allNodes = [rawNode, ...extractedNodes, ...fallbackNodes]
+    const edges: MemoryEdge[] = allNodes.slice(1).map(node => ({
+      id: uuidv4(),
+      source: rawNode.id,
+      target: node.id,
+      type: 'extends',
+      weight: node.confidence || 0.7,
+      label: `Quick extracted ${node.type}`,
+      metadata: { quickExtract: true },
+    }))
+
+    source.nodeCount = allNodes.length
+    db.upsertSource(source)
+    db.batchUpsertNodes(allNodes)
+    if (edges.length > 0) db.batchUpsertEdges(edges)
+
+    const embeddingModel = db.getAllSettings().embeddingModel || 'nomic-embed-text'
+    for (const node of allNodes) {
+      const embText = [node.title, node.summary || '', node.entities.join(', '), node.content.slice(0, 800)].join('\n')
+      let embedding = ollama.fastEmbed(embText)
+      try {
+        const real = await ollama.embed(embText)
+        if (real.length > 0) embedding = real
+      } catch { /* fast embedding fallback is already ready */ }
+      db.saveEmbedding(node.id, embedding, embeddingModel)
+    }
+
+    return { source, rawNode, nodes: [...extractedNodes, ...fallbackNodes], savedCount: allNodes.length }
   })
 
   ipcMain.handle('memory:query', async (_, query: string) => {
@@ -452,6 +548,51 @@ function expandQuery(query: string): string[] {
   }
 
   return [...new Set(terms)]
+}
+
+function inferQuickInputType(text: string): string {
+  if (/^\s*(user|assistant|human):/im.test(text)) return 'conversation'
+  if (/^\s*[-*]\s+/m.test(text)) return 'bullet_points'
+  if (/\/\/|\/\*|#\s*(todo|note|decision)/i.test(text)) return 'code_comments'
+  return 'notes'
+}
+
+function buildFallbackQuickNodes(text: string, rawNode: MemoryNode, source: DataSource): MemoryNode[] {
+  const lines = text.split(/\n+/).map(line => line.trim()).filter(Boolean)
+  const nodes: MemoryNode[] = []
+  const now = rawNode.timestamp
+
+  const mk = (type: MemoryNode['type'], title: string, summary: string, confidence: number): MemoryNode => ({
+    id: uuidv4(),
+    title,
+    content: summary,
+    type,
+    sourceId: source.id,
+    sourceName: source.name,
+    sourceType: source.type,
+    timestamp: now,
+    confidence,
+    tags: ['quick-extract', type],
+    entities: [],
+    summary,
+    metadata: { confidence, extractedFromNodeId: rawNode.id, extractor: 'deterministic-quick-extract' },
+  })
+
+  const projectLine = lines.find(line => /\b(project|building|contextfabric|gemma|app|tool|protocol)\b/i.test(line))
+  if (projectLine) nodes.push(mk('project', 'Quick project context', cleanQuickLine(projectLine), 0.62))
+
+  for (const line of lines.filter(line => /\b(decision|decided|chose|because|use|instead of)\b/i.test(line)).slice(0, 2)) {
+    nodes.push(mk('decision', 'Quick decision', cleanQuickLine(line), 0.64))
+  }
+  for (const line of lines.filter(line => /\b(prefer|preference|style|tone|avoid|concise|detailed|source-cited|privacy|offline)\b/i.test(line)).slice(0, 3)) {
+    nodes.push(mk(/\b(style|tone|concise|detailed|source-cited)\b/i.test(line) ? 'style' : 'preference', 'Quick preference', cleanQuickLine(line), 0.64))
+  }
+
+  return nodes.slice(0, 6)
+}
+
+function cleanQuickLine(line: string): string {
+  return line.replace(/^[-*#\s]+/, '').replace(/\s+/g, ' ').trim().slice(0, 240)
 }
 
 function isContextProfileQuery(query: string): boolean {
