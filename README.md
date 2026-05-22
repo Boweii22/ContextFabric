@@ -176,6 +176,46 @@ Invoke-RestMethod `
   -Body '{"query":"current project context and technical decisions","ttlSeconds":3600}'
 ```
 
+## Challenge API
+
+For demos, curl, and judges, ContextFabric also starts a simple local-only API on `127.0.0.1:7749`. It is bound to loopback only, so it is not reachable from the internet or your LAN.
+
+Health and model availability:
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:7749/health"
+```
+
+Extract typed memory nodes from text with Gemma 4:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:7749/extract" `
+  -ContentType "application/json" `
+  -Body '{"title":"Demo context","text":"ContextFabric is a local-first AI memory layer. I prefer concise answers and real working features.","save":true}'
+```
+
+Get an app-aware context payload:
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:7749/context?app=claude&query=current%20project%20context&maxWords=800"
+```
+
+Create and delete a manual node:
+
+```powershell
+$node = Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:7749/nodes" `
+  -ContentType "application/json" `
+  -Body '{"type":"preference","title":"Answer style","content":"The user prefers simple testing steps and no fake demos.","confidence":0.95}'
+
+Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:7749/nodes/$($node.node.id)"
+```
+
+Requests are logged locally to the app data folder as `logs/local-api-7749.log`.
+
 ## Browser Extension
 
 Package the extension:

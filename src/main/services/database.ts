@@ -1067,6 +1067,16 @@ export class DatabaseService {
     return true
   }
 
+  deleteNode(id: string): boolean {
+    const now = Date.now()
+    const result = this.db.prepare(
+      'UPDATE memory_nodes SET deleted_at = ?, version = version + 1, site_id = ? WHERE id = ? AND deleted_at IS NULL'
+    ).run(now, this.siteId, id)
+    const deleted = Number(result.changes || 0) > 0
+    if (deleted) this.logChange('memory_nodes', id, 'delete', now)
+    return deleted
+  }
+
   purgeExpiredDeletedNodes(retentionDays = 30): number {
     const cutoff = Date.now() - retentionDays * 86_400_000
     const result = this.db.prepare('DELETE FROM memory_nodes WHERE deleted_at IS NOT NULL AND deleted_at < ?').run(cutoff)

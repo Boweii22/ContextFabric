@@ -1,8 +1,12 @@
 import express from 'express'
 import type { Request, Response, NextFunction } from 'express'
+import { app as electronApp } from 'electron'
+import { appendFileSync, mkdirSync } from 'fs'
+import { join } from 'path'
+import { v4 as uuidv4 } from 'uuid'
 import type { DatabaseService } from '../services/database'
 import type { OllamaService } from '../services/ollama'
-import type { MemoryNode } from '../../shared/types'
+import type { DataSource, MemoryNode } from '../../shared/types'
 import { buildFallbackContextPayload } from '../../shared/contextAssembly'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -114,6 +118,133 @@ function isGeneratedOrBundledNode(node: MemoryNode): boolean {
     if (longLines >= 2 || symbolRatio > 0.12) return true
   }
   return false
+}
+
+function getOrCreateHttpSource(db: DatabaseService): DataSource {
+  const id = 'local-http-api'
+  const existing = db.getSource(id)
+  if (existing) return existing
+  const now = Date.now()
+  const source: DataSource = {
+    id,
+    name: 'Local HTTP API',
+    type: 'markdown',
+    path: 'contextfabric-http://localhost:7749',
+    status: 'ready',
+    lastSynced: now,
+    nodeCount: 0,
+    color: '#22C55E',
+    icon: 'terminal',
+    enabled: true,
+    metadata: { localHttpApi: true },
+  }
+  db.upsertSource(source)
+  return source
+}
+
+async function saveNodeWithEmbedding(db: DatabaseService, ollama: OllamaService, node: MemoryNode): Promise<void> {
+  db.upsertNode(node)
+  const embeddingModel = db.getAllSettings().embeddingModel || 'nomic-embed-text'
+  const embText = [node.title, node.summary || '', node.entities.join(', '), node.content.slice(0, 800)].join('\n')
+  let embedding = ollama.fastEmbed(embText)
+  try {
+    const real = await ollama.embed(embText)
+    if (real.length > 0) embedding = real
+  } catch {
+    // Deterministic local embedding is already available.
+  }
+  db.saveEmbedding(node.id, embedding, embeddingModel)
+}
+
+async function extractNodesFromText(
+  db: DatabaseService,
+  ollama: OllamaService,
+  text: string,
+  title = 'HTTP Extract',
+  inputType = 'api',
+  save = false
+): Promise<{ source?: DataSource; rawNode?: MemoryNode; nodes: MemoryNode[]; savedCount: number }> {
+  const now = Date.now()
+  const source = getOrCreateHttpSource(db)
+  const extraction = await ollama.extractContextNodes(text, inputType)
+  const extracted = extraction.nodes.map((node, index): MemoryNode => ({
+    id: uuidv4(),
+    title: node.title,
+    content: [
+      node.summary,
+      `Evidence: ${node.evidence}`,
+      node.metadata.reasoning ? `Reasoning: ${node.metadata.reasoning}` : '',
+    ].filter(Boolean).join('\n'),
+    type: node.type,
+    sourceId: source.id,
+    sourceName: source.name,
+    sourceType: source.type,
+    timestamp: now,
+    confidence: node.confidence,
+    tags: [...new Set(['http-extract', node.type, ...node.tags])],
+    entities: node.entities,
+    summary: node.summary,
+    metadata: {
+      ...node.metadata,
+      confidence: node.confidence,
+      evidence: node.evidence,
+      extractionSchema: 'contextfabric.extraction.v1',
+      extractor: 'gemma4',
+      httpExtractIndex: index,
+    },
+  }))
+
+  const nodes = extracted.length > 0 ? extracted : buildFallbackHttpNodes(text, title, source, now)
+  if (!save) return { nodes, savedCount: 0 }
+
+  const rawNode: MemoryNode = {
+    id: uuidv4(),
+    title,
+    content: text,
+    type: 'note',
+    sourceId: source.id,
+    sourceName: source.name,
+    sourceType: source.type,
+    timestamp: now,
+    confidence: 1,
+    tags: ['http-extract', 'raw'],
+    entities: ollama.simpleEntityExtract(text).map(entity => entity.name),
+    summary: text.slice(0, 220),
+    metadata: { localHttpApi: true, raw: true },
+  }
+  await saveNodeWithEmbedding(db, ollama, rawNode)
+  for (const node of nodes) {
+    node.metadata = { ...node.metadata, extractedFromNodeId: rawNode.id }
+    await saveNodeWithEmbedding(db, ollama, node)
+  }
+  db.updateSourceStatus(source.id, 'ready', db.getNodesBySource(source.id).length)
+  return { source: db.getSource(source.id) || source, rawNode, nodes, savedCount: nodes.length + 1 }
+}
+
+function buildFallbackHttpNodes(text: string, title: string, source: DataSource, timestamp: number): MemoryNode[] {
+  const clean = text.replace(/\s+/g, ' ').trim()
+  const type: MemoryNode['type'] = /\b(prefer|preference|like|want|style)\b/i.test(text)
+    ? 'preference'
+    : /\b(decided|chose|because|instead|tradeoff|decision)\b/i.test(text)
+      ? 'decision'
+      : /\b(project|building|app|tool|product)\b/i.test(text)
+        ? 'project'
+        : 'note'
+  return [{
+    id: uuidv4(),
+    title: title || `HTTP ${type}`,
+    content: clean,
+    type,
+    sourceId: source.id,
+    sourceName: source.name,
+    sourceType: source.type,
+    timestamp,
+    confidence: 0.62,
+    tags: ['http-extract', 'fallback', type],
+    entities: [],
+    summary: clean.slice(0, 220),
+    metadata: { fallback: true, extractor: 'deterministic' },
+  }]
 }
 
 // ── Permission middleware ─────────────────────────────────────────────────────
@@ -597,4 +728,188 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
       server.listen(port + 1, '127.0.0.1')
     }
   })
+
+  startLocalChallengeApi(db, ollama, 7749)
+}
+
+function startLocalChallengeApi(db: DatabaseService, ollama: OllamaService, port: number): void {
+  const compat = express()
+  compat.use(express.json({ limit: '2mb' }))
+  compat.use((req: Request, res: Response, next: NextFunction) => {
+    const start = Date.now()
+    res.on('finish', () => {
+      writeLocalApiLog(`${new Date().toISOString()} ${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - start}ms`)
+    })
+    next()
+  })
+
+  compat.get('/health', async (_req: Request, res: Response) => {
+    const settings = db.getAllSettings()
+    res.json({
+      status: 'ok',
+      api: 'contextfabric-local',
+      host: '127.0.0.1',
+      port,
+      model: {
+        available: await ollama.isConnected(),
+        name: settings.ollamaModel,
+        embeddingModel: settings.embeddingModel,
+      },
+      stats: db.getStats(),
+    })
+  })
+
+  compat.post('/extract', async (req: Request, res: Response) => {
+    try {
+      const { text, title = 'HTTP Extract', inputType = 'api', save = false } = req.body as {
+        text?: string
+        title?: string
+        inputType?: string
+        save?: boolean
+      }
+      if (!text?.trim()) {
+        res.status(400).json({ error: 'text is required' })
+        return
+      }
+      const result = await extractNodesFromText(db, ollama, text, title, inputType, Boolean(save))
+      res.json({
+        ok: true,
+        saved: Boolean(save),
+        savedCount: result.savedCount,
+        source: result.source ? { id: result.source.id, name: result.source.name } : undefined,
+        rawNodeId: result.rawNode?.id,
+        nodes: result.nodes.map(nodeToPublicJson),
+      })
+    } catch (err) {
+      res.status(500).json({ error: String(err) })
+    }
+  })
+
+  compat.get('/context', async (req: Request, res: Response) => {
+    try {
+      const appId = String(req.query.app || req.query.appId || 'generic')
+      const query = String(req.query.query || 'current project context, writing style, technical decisions, preferences')
+      const maxWords = Number(req.query.maxWords || 800)
+      const nodes = selectTokenNodes(db.getNodes(800), query, 16)
+      const assembly = await assembleTokenPayloadWithTimeout(ollama, { appId, query, nodes, maxWords })
+      db.logContextAssembly({
+        appId: `local-http:${appId}`,
+        appFormat: assembly.appFormat,
+        query,
+        inputNodeIds: nodes.map(node => node.id),
+        outputPayload: assembly.payload,
+        wordCount: assembly.wordCount,
+        warnings: assembly.warnings,
+      })
+      res.json({
+        ok: true,
+        appFormat: assembly.appFormat,
+        query,
+        payload: assembly.payload,
+        wordCount: assembly.wordCount,
+        usedNodeIds: assembly.usedNodeIds,
+        warnings: assembly.warnings,
+      })
+    } catch (err) {
+      res.status(500).json({ error: String(err) })
+    }
+  })
+
+  compat.post('/nodes', async (req: Request, res: Response) => {
+    try {
+      const source = getOrCreateHttpSource(db)
+      const now = Date.now()
+      const {
+        title,
+        content,
+        type = 'note',
+        confidence = 1,
+        tags = [],
+        entities = [],
+        summary,
+        metadata = {},
+      } = req.body as Partial<MemoryNode>
+      if (!title?.trim() || !content?.trim()) {
+        res.status(400).json({ error: 'title and content are required' })
+        return
+      }
+      const allowedTypes: MemoryNode['type'][] = ['conversation', 'document', 'code', 'note', 'decision', 'entity', 'project', 'style', 'preference', 'person']
+      const nodeType = allowedTypes.includes(type as MemoryNode['type']) ? type as MemoryNode['type'] : 'note'
+      const node: MemoryNode = {
+        id: uuidv4(),
+        title,
+        content,
+        type: nodeType,
+        sourceId: source.id,
+        sourceName: source.name,
+        sourceType: source.type,
+        timestamp: now,
+        confidence: Math.max(0, Math.min(1, Number(confidence) || 0)),
+        tags: Array.isArray(tags) ? tags.map(String) : [],
+        entities: Array.isArray(entities) ? entities.map(String) : [],
+        summary: summary ? String(summary) : content.slice(0, 220),
+        metadata: { ...(metadata as Record<string, unknown>), localHttpApi: true },
+      }
+      await saveNodeWithEmbedding(db, ollama, node)
+      db.updateSourceStatus(source.id, 'ready', db.getNodesBySource(source.id).length)
+      res.status(201).json({ ok: true, node: nodeToPublicJson(node) })
+    } catch (err) {
+      res.status(500).json({ error: String(err) })
+    }
+  })
+
+  compat.delete('/nodes/:id', (req: Request, res: Response) => {
+    try {
+      const deleted = db.deleteNode(req.params.id)
+      if (!deleted) {
+        res.status(404).json({ error: 'node not found' })
+        return
+      }
+      res.json({ ok: true, deleted: true, id: req.params.id })
+    } catch (err) {
+      res.status(500).json({ error: String(err) })
+    }
+  })
+
+  const server = compat.listen(port, '127.0.0.1', () => {
+    console.log(`[Local API] ContextFabric challenge API running on http://127.0.0.1:${port}`)
+    writeLocalApiLog(`${new Date().toISOString()} START 127.0.0.1:${port}`)
+  })
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[Local API] Port ${port} already in use; challenge API not started.`)
+      writeLocalApiLog(`${new Date().toISOString()} ERROR port ${port} already in use`)
+    } else {
+      console.warn('[Local API] Failed to start:', err.message)
+      writeLocalApiLog(`${new Date().toISOString()} ERROR ${err.message}`)
+    }
+  })
+}
+
+function nodeToPublicJson(node: MemoryNode): Record<string, unknown> {
+  return {
+    id: node.id,
+    type: node.type,
+    title: node.title,
+    summary: node.summary,
+    content: node.content,
+    confidence: node.confidence,
+    source: node.sourceName,
+    sourceId: node.sourceId,
+    createdAt: new Date(node.timestamp).toISOString(),
+    tags: node.tags,
+    entities: node.entities,
+    metadata: node.metadata,
+  }
+}
+
+function writeLocalApiLog(line: string): void {
+  try {
+    const dir = join(electronApp.getPath('userData'), 'logs')
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'local-api-7749.log'), `${line}\n`, 'utf8')
+  } catch {
+    // Request logging must never break local API calls.
+  }
 }
