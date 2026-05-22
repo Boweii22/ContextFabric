@@ -180,6 +180,12 @@ Invoke-RestMethod `
 
 For demos, curl, and judges, ContextFabric also starts a simple local-only API on `127.0.0.1:7749`. It is bound to loopback only, so it is not reachable from the internet or your LAN.
 
+Open the screenshot-ready local web UI:
+
+```text
+http://127.0.0.1:7749/ui
+```
+
 Health and model availability:
 
 ```powershell

@@ -815,6 +815,24 @@ function startLocalChallengeApi(db: DatabaseService, ollama: OllamaService, port
     }
   })
 
+  compat.get('/nodes', (_req: Request, res: Response) => {
+    try {
+      const nodes = db.getNodes(1000)
+      const grouped = nodes.reduce<Record<string, number>>((acc, node) => {
+        acc[node.type] = (acc[node.type] || 0) + 1
+        return acc
+      }, {})
+      res.json({
+        ok: true,
+        total: nodes.length,
+        grouped,
+        nodes: nodes.map(nodeToPublicJson),
+      })
+    } catch (err) {
+      res.status(500).json({ error: String(err) })
+    }
+  })
+
   compat.post('/nodes', async (req: Request, res: Response) => {
     try {
       const source = getOrCreateHttpSource(db)
@@ -871,6 +889,10 @@ function startLocalChallengeApi(db: DatabaseService, ollama: OllamaService, port
     }
   })
 
+  compat.get('/ui', (_req: Request, res: Response) => {
+    res.type('html').send(buildChallengeUiHtml())
+  })
+
   const server = compat.listen(port, '127.0.0.1', () => {
     console.log(`[Local API] ContextFabric challenge API running on http://127.0.0.1:${port}`)
     writeLocalApiLog(`${new Date().toISOString()} START 127.0.0.1:${port}`)
@@ -912,4 +934,373 @@ function writeLocalApiLog(line: string): void {
   } catch {
     // Request logging must never break local API calls.
   }
+}
+
+function buildChallengeUiHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ContextFabric Local Memory</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b14;
+      --panel: #101624;
+      --panel-2: #151c2c;
+      --line: rgba(148, 163, 184, 0.16);
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --soft: #cbd5e1;
+      --accent: #7c3aed;
+      --cyan: #22d3ee;
+      --green: #34d399;
+      --red: #fb7185;
+    }
+    * { box-sizing: border-box; letter-spacing: 0; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      border-bottom: 1px solid var(--line);
+      background: rgba(8, 11, 20, 0.94);
+      backdrop-filter: blur(16px);
+    }
+    .bar {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 18px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h1 { margin: 0; font-size: 22px; line-height: 1.2; }
+    .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .status {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      color: var(--soft);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 18px var(--green); }
+    main {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.75fr);
+      gap: 18px;
+    }
+    section {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .section-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    h2 { margin: 0; font-size: 15px; }
+    .count { color: var(--muted); font-size: 12px; }
+    .content { padding: 16px; }
+    .grid { display: grid; gap: 12px; }
+    .row { display: grid; grid-template-columns: 1fr 140px; gap: 10px; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #0b1020;
+      color: var(--text);
+      padding: 10px 11px;
+      font: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+    textarea { min-height: 104px; resize: vertical; line-height: 1.5; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(34, 211, 238, 0.55); }
+    button {
+      border: 1px solid rgba(124, 58, 237, 0.5);
+      border-radius: 7px;
+      background: var(--accent);
+      color: white;
+      padding: 10px 12px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    button.secondary { background: transparent; color: var(--soft); border-color: var(--line); }
+    button.danger { background: transparent; border-color: rgba(251, 113, 133, 0.45); color: #fecdd3; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .message { color: var(--muted); font-size: 12px; min-height: 18px; }
+    .types { display: flex; flex-wrap: wrap; gap: 8px; }
+    .type-pill {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--soft);
+      border-radius: 7px;
+      padding: 7px 9px;
+      font-size: 12px;
+    }
+    .type-pill strong { color: var(--text); }
+    .node-list { display: grid; gap: 12px; }
+    .group { display: grid; gap: 8px; }
+    .group-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--cyan);
+      font-size: 12px;
+      text-transform: uppercase;
+      font-weight: 750;
+    }
+    article.node {
+      border: 1px solid var(--line);
+      background: #0b1020;
+      border-radius: 8px;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+    }
+    .node-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .node h3 { margin: 0; font-size: 14px; line-height: 1.35; }
+    .node p { margin: 0; color: var(--soft); font-size: 13px; line-height: 1.5; }
+    .meta { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+    .score {
+      min-width: 48px;
+      text-align: center;
+      border: 1px solid rgba(52, 211, 153, 0.28);
+      color: #bbf7d0;
+      background: rgba(52, 211, 153, 0.08);
+      border-radius: 7px;
+      padding: 5px 6px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    pre {
+      margin: 0;
+      min-height: 220px;
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #050816;
+      color: #dbeafe;
+      padding: 13px;
+      white-space: pre-wrap;
+      line-height: 1.55;
+      font: 12px ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 960px) {
+      main { grid-template-columns: 1fr; padding: 16px; }
+      .bar { padding: 16px; align-items: flex-start; flex-direction: column; }
+      .row, .split { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <div>
+        <h1>ContextFabric Local Memory</h1>
+        <p class="subtitle">Live daemon UI for nodes, Gemma extraction, and Claude context preview.</p>
+      </div>
+      <div class="status"><span class="dot"></span><span id="health">Checking local daemon...</span></div>
+    </div>
+  </header>
+  <main>
+    <div class="grid">
+      <section>
+        <div class="section-head">
+          <h2>Memory Nodes</h2>
+          <div class="actions">
+            <span class="count" id="nodeCount">0 nodes</span>
+            <button class="secondary" id="refreshNodes">Refresh</button>
+          </div>
+        </div>
+        <div class="content grid">
+          <div class="types" id="typeSummary"></div>
+          <div class="node-list" id="nodeList"></div>
+        </div>
+      </section>
+    </div>
+    <aside class="grid">
+      <section>
+        <div class="section-head"><h2>Extract Context</h2><span class="count">Gemma 4</span></div>
+        <div class="content grid">
+          <label>Title <input id="extractTitle" value="Screenshot demo context"></label>
+          <label>Paste text <textarea id="extractText">ContextFabric is a local-first AI memory layer. The user prefers simple testing steps, real working features, and no fake demos.</textarea></label>
+          <div class="actions">
+            <button id="extractBtn">Extract and save</button>
+            <span class="message" id="extractMsg"></span>
+          </div>
+        </div>
+      </section>
+      <section>
+        <div class="section-head"><h2>Add Manual Node</h2><span class="count">SQLite</span></div>
+        <div class="content grid">
+          <div class="row">
+            <label>Title <input id="manualTitle" placeholder="Answer style"></label>
+            <label>Type
+              <select id="manualType">
+                <option>preference</option><option>project</option><option>decision</option><option>style</option><option>person</option><option>note</option><option>document</option><option>code</option>
+              </select>
+            </label>
+          </div>
+          <label>Content <textarea id="manualContent" placeholder="The user prefers concise answers with exact test commands."></textarea></label>
+          <div class="actions">
+            <button id="addNodeBtn">Add node</button>
+            <span class="message" id="manualMsg"></span>
+          </div>
+        </div>
+      </section>
+      <section>
+        <div class="section-head"><h2>Claude Context Preview</h2><span class="count" id="previewWords">0 words</span></div>
+        <div class="content grid">
+          <label>Query <input id="previewQuery" value="current project context, writing style, technical decisions, preferences"></label>
+          <div class="actions">
+            <button id="previewBtn">Preview Claude payload</button>
+            <button class="secondary" id="copyPreview">Copy</button>
+          </div>
+          <pre id="preview">Click preview to see what ContextFabric would inject into Claude right now.</pre>
+        </div>
+      </section>
+    </aside>
+  </main>
+  <script>
+    const state = { nodes: [] };
+    const api = async (url, options) => {
+      const res = await fetch(url, options);
+      const text = await res.text();
+      const body = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(body.error || res.statusText);
+      return body;
+    };
+    const byId = id => document.getElementById(id);
+    const escapeHtml = value => String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+    const pct = value => Math.round(Number(value || 0) * 100);
+
+    async function loadHealth() {
+      try {
+        const health = await api('/health');
+        byId('health').textContent = 'Local daemon online - ' + health.model.name + (health.model.available ? ' connected' : ' offline');
+      } catch (error) {
+        byId('health').textContent = 'Daemon unavailable: ' + error.message;
+      }
+    }
+
+    async function loadNodes() {
+      const data = await api('/nodes');
+      state.nodes = data.nodes || [];
+      byId('nodeCount').textContent = data.total + ' nodes';
+      renderTypeSummary(data.grouped || {});
+      renderNodes(state.nodes);
+    }
+
+    function renderTypeSummary(grouped) {
+      const keys = Object.keys(grouped).sort();
+      byId('typeSummary').innerHTML = keys.length
+        ? keys.map(type => '<span class="type-pill"><strong>' + escapeHtml(type) + '</strong> ' + grouped[type] + '</span>').join('')
+        : '<span class="type-pill">No nodes yet</span>';
+    }
+
+    function renderNodes(nodes) {
+      const grouped = nodes.reduce((acc, node) => {
+        (acc[node.type] ||= []).push(node);
+        return acc;
+      }, {});
+      const html = Object.keys(grouped).sort().map(type => {
+        const items = grouped[type].map(node => (
+          '<article class="node">' +
+            '<div class="node-top"><h3>' + escapeHtml(node.title) + '</h3><span class="score">' + pct(node.confidence) + '%</span></div>' +
+            '<p>' + escapeHtml(node.summary || node.content || '') + '</p>' +
+            '<div class="meta"><span>' + escapeHtml(node.source) + '</span><span>' + escapeHtml(node.createdAt) + '</span><span>' + escapeHtml(node.id.slice(0, 8)) + '</span></div>' +
+            '<div class="actions"><button class="danger" data-delete="' + escapeHtml(node.id) + '">Delete</button></div>' +
+          '</article>'
+        )).join('');
+        return '<div class="group"><div class="group-title"><span>' + escapeHtml(type) + '</span><span>' + grouped[type].length + '</span></div>' + items + '</div>';
+      }).join('');
+      byId('nodeList').innerHTML = html || '<article class="node"><p>No nodes yet. Extract or add one to begin.</p></article>';
+    }
+
+    async function extractAndSave() {
+      byId('extractMsg').textContent = 'Extracting...';
+      const data = await api('/extract', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ title: byId('extractTitle').value, text: byId('extractText').value, save: true })
+      });
+      byId('extractMsg').textContent = 'Saved ' + data.savedCount + ' node(s).';
+      await loadNodes();
+      await previewContext();
+    }
+
+    async function addManualNode() {
+      byId('manualMsg').textContent = 'Saving...';
+      await api('/nodes', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          title: byId('manualTitle').value,
+          type: byId('manualType').value,
+          content: byId('manualContent').value,
+          confidence: 0.95
+        })
+      });
+      byId('manualMsg').textContent = 'Node saved.';
+      byId('manualTitle').value = '';
+      byId('manualContent').value = '';
+      await loadNodes();
+      await previewContext();
+    }
+
+    async function deleteNode(id) {
+      await api('/nodes/' + encodeURIComponent(id), { method: 'DELETE' });
+      await loadNodes();
+      await previewContext();
+    }
+
+    async function previewContext() {
+      byId('preview').textContent = 'Assembling Claude preview...';
+      const params = new URLSearchParams({ app: 'claude', query: byId('previewQuery').value, maxWords: '800' });
+      const data = await api('/context?' + params.toString());
+      byId('preview').textContent = data.payload || '';
+      byId('previewWords').textContent = (data.wordCount || 0) + ' words';
+    }
+
+    byId('refreshNodes').addEventListener('click', loadNodes);
+    byId('extractBtn').addEventListener('click', () => extractAndSave().catch(error => byId('extractMsg').textContent = error.message));
+    byId('addNodeBtn').addEventListener('click', () => addManualNode().catch(error => byId('manualMsg').textContent = error.message));
+    byId('previewBtn').addEventListener('click', () => previewContext().catch(error => byId('preview').textContent = error.message));
+    byId('copyPreview').addEventListener('click', async () => navigator.clipboard.writeText(byId('preview').textContent || ''));
+    byId('nodeList').addEventListener('click', event => {
+      const id = event.target && event.target.getAttribute && event.target.getAttribute('data-delete');
+      if (id) deleteNode(id).catch(error => alert(error.message));
+    });
+
+    loadHealth();
+    loadNodes().then(previewContext).catch(error => {
+      byId('nodeList').innerHTML = '<article class="node"><p>' + escapeHtml(error.message) + '</p></article>';
+    });
+  </script>
+</body>
+</html>`;
 }
