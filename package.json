@@ -6,6 +6,10 @@
   "homepage": "https://contextfabric.ai",
   "author": "ContextFabric",
   "license": "MIT",
+  "engines": {
+    "node": ">=20 <24",
+    "npm": ">=10"
+  },
   "scripts": {
     "start": "node scripts/start-local.mjs",
     "dev": "electron-vite dev",
@@ -38,7 +42,6 @@
     "@radix-ui/react-switch": "^1.0.3",
     "@radix-ui/react-tabs": "^1.0.4",
     "@radix-ui/react-tooltip": "^1.0.7",
-    "@vlcn.io/crsqlite-allinone": "^0.15.2",
     "@xyflow/react": "^12.0.0",
     "axios": "^1.6.7",
     "better-sqlite3": "^9.4.3",

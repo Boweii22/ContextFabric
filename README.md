@@ -43,7 +43,7 @@ See [GEMMA4.md](GEMMA4.md) for the model choice, E2B rationale, offline proof, a
 ## Requirements
 
 - Windows, macOS, or Linux
-- Node.js 20+
+- Node.js 20 or 22. Node 24 is not recommended for this Electron/native SQLite stack.
 - npm
 - Ollama from [ollama.com](https://ollama.com)
 - Enough free RAM to load your selected Gemma 4 model
@@ -59,6 +59,15 @@ npm run start
 ```
 
 That command installs npm dependencies when needed, starts Ollama if it is not already running, pulls Gemma 4 plus the local embedding model, verifies the local Gemma runtime, and starts ContextFabric.
+
+On macOS, use Node 20 if you have nvm:
+
+```bash
+nvm install 20
+nvm use 20
+npm install
+npm run dev
+```
 
 Open the local demo UI:
 

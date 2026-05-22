@@ -6,6 +6,13 @@ const root = process.cwd();
 const isWindows = process.platform === 'win32';
 const npmCmd = isWindows ? 'npm.cmd' : 'npm';
 const ollamaCmd = isWindows ? 'ollama.exe' : 'ollama';
+const nodeMajor = Number(process.versions.node.split('.')[0]);
+
+if (nodeMajor >= 24) {
+  console.error('ContextFabric currently supports Node 20 or 22 for the Electron/native SQLite toolchain.');
+  console.error(`Detected Node ${process.versions.node}. Install Node 20, then rerun: npm run start`);
+  process.exit(1);
+}
 
 function run(label, command, args, options = {}) {
   console.log(`\n== ${label} ==`);

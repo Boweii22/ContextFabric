@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
 import { mkdirSync, existsSync } from 'fs'
-import { extensionPath } from '@vlcn.io/crsqlite'
+import { createRequire } from 'module'
 import { SecretStore } from './secrets'
 import {
   randomBytes, createCipheriv, createDecipheriv, createHash,
@@ -28,14 +28,22 @@ import type {
 //  • `sync_changes` table logs every INSERT/UPDATE/DELETE for sync transport
 //  • `site_id` in settings identifies this device permanently
 //
-// To enable full sync later:
-//   npm install @vlcn.io/crsqlite-allinone
-//   Then call: SELECT crsql_as_crr('table_name') for each table
-//   The sync_changes table maps directly to crsql_changes format
+// CR-SQLite can be installed later as an optional native extension. The default
+// install avoids it so macOS/Node version differences do not block judges.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SCHEMA_VERSION = 9
 const CRR_TABLES = ['memory_nodes', 'memory_edges', 'data_sources', 'entities', 'timeline_events', 'query_history']
+const requireOptional = createRequire(import.meta.url)
+
+function resolveCRSQLiteExtensionPath(): string | null {
+  try {
+    const mod = requireOptional('@vlcn.io/crsqlite') as { extensionPath?: string }
+    return mod.extensionPath || null
+  } catch {
+    return null
+  }
+}
 
 export class DatabaseService {
   private db!: Database.Database
@@ -548,7 +556,9 @@ export class DatabaseService {
 
   private initializeCRSQLite(): void {
     try {
-      this.db.loadExtension(extensionPath)
+      const optionalExtensionPath = resolveCRSQLiteExtensionPath()
+      if (!optionalExtensionPath) throw new Error('optional @vlcn.io/crsqlite extension is not installed')
+      this.db.loadExtension(optionalExtensionPath)
 
       for (const table of CRR_TABLES) {
         try {
