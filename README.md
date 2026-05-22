@@ -58,15 +58,14 @@ cd ContextFabric
 npm run start
 ```
 
-That command installs npm dependencies when needed, starts Ollama if it is not already running, pulls Gemma 4 plus the local embedding model, verifies the local Gemma runtime, and starts ContextFabric.
+`npm run start` is the recommended command for normal users, judges, and fresh clones. It checks/repairs npm dependencies, starts Ollama if it is not already running, pulls Gemma 4 plus the local embedding model, verifies the local Gemma runtime, and starts ContextFabric.
 
-On macOS, use Node 20 if you have nvm:
+On macOS, use Node 20 or 22. If you have `nvm`, run:
 
 ```bash
 nvm install 20
 nvm use 20
-npm install
-npm run dev
+npm run start
 ```
 
 If a Mac clone reports `electron-vite: command not found`, the npm install is incomplete or dev dependencies were omitted. Repair it with:
@@ -79,6 +78,8 @@ npm run start
 ```
 
 Do not run `electron-rebuild` manually for normal setup.
+
+Use `npm run dev` only if dependencies are already installed and you are actively developing the Electron app. For everyone else, use `npm run start`.
 
 Open the local demo UI:
 
@@ -99,6 +100,18 @@ The fastest proof path is:
 git clone https://github.com/Boweii22/ContextFabric.git
 cd ContextFabric
 npm install
+```
+
+After install, start the product with:
+
+```bash
+npm run start
+```
+
+For development-only hot reload:
+
+```bash
+npm run dev
 ```
 
 ## Install Gemma 4 Locally
@@ -161,6 +174,12 @@ npm run verify:gemma
 If it passes offline, Gemma 4 is running locally with zero network egress for generation.
 
 ## Run The App
+
+```bash
+npm run start
+```
+
+For development hot reload after dependencies are already installed:
 
 ```bash
 npm run dev
