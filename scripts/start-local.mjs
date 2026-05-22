@@ -6,6 +6,8 @@ const root = process.cwd();
 const isWindows = process.platform === 'win32';
 const npmCmd = isWindows ? 'npm.cmd' : 'npm';
 const ollamaCmd = isWindows ? 'ollama.exe' : 'ollama';
+const electronViteBin = join(root, 'node_modules', '.bin', isWindows ? 'electron-vite.cmd' : 'electron-vite');
+const electronBin = join(root, 'node_modules', '.bin', isWindows ? 'electron.cmd' : 'electron');
 const nodeMajor = Number(process.versions.node.split('.')[0]);
 
 if (nodeMajor >= 24) {
@@ -37,6 +39,28 @@ function tryRun(label, command, args) {
   return result.status === 0;
 }
 
+function ensureNpmDependencies() {
+  const hasNodeModules = existsSync(join(root, 'node_modules'));
+  const hasElectronVite = existsSync(electronViteBin);
+  const hasElectron = existsSync(electronBin);
+
+  if (hasNodeModules && hasElectronVite && hasElectron) {
+    console.log('npm dependencies found.');
+    return;
+  }
+
+  if (hasNodeModules) {
+    console.log('node_modules exists, but required Electron dev tools are missing.');
+    console.log('Repairing npm dependencies with dev packages included.');
+  }
+
+  run('Install npm dependencies', npmCmd, ['install', '--include=dev']);
+
+  if (!existsSync(electronViteBin)) {
+    throw new Error('electron-vite was not installed. Delete node_modules and rerun: npm install --include=dev');
+  }
+}
+
 function startOllamaServe() {
   console.log('\n== Start Ollama if needed ==');
   const check = spawnSync(ollamaCmd, ['list'], { stdio: 'ignore', shell: false });
@@ -56,11 +80,7 @@ function startOllamaServe() {
 }
 
 try {
-  if (!existsSync(join(root, 'node_modules'))) {
-    run('Install npm dependencies', npmCmd, ['install']);
-  } else {
-    console.log('node_modules found; skipping npm install.');
-  }
+  ensureNpmDependencies();
 
   startOllamaServe();
 

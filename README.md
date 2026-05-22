@@ -69,6 +69,17 @@ npm install
 npm run dev
 ```
 
+If a Mac clone reports `electron-vite: command not found`, the npm install is incomplete or dev dependencies were omitted. Repair it with:
+
+```bash
+nvm use 20
+rm -rf node_modules
+npm install --include=dev
+npm run start
+```
+
+Do not run `electron-rebuild` manually for normal setup.
+
 Open the local demo UI:
 
 ```text
