@@ -25,6 +25,8 @@ Gemma 4 is used for real work:
 - detecting technical decisions
 - creating context bundles that can be permission-served to other AI tools
 
+See [GEMMA4.md](GEMMA4.md) for the model choice, E2B rationale, offline proof, and exact Gemma responsibilities.
+
 ## Current Product Surface
 
 - Desktop app built with Electron, React, TypeScript, and SQLite
@@ -45,6 +47,31 @@ Gemma 4 is used for real work:
 - npm
 - Ollama from [ollama.com](https://ollama.com)
 - Enough free RAM to load your selected Gemma 4 model
+
+## 5-Minute Judge Setup
+
+For the shortest path, install [Ollama](https://ollama.com), then run:
+
+```bash
+git clone https://github.com/Boweii22/ContextFabric.git
+cd ContextFabric
+npm run start
+```
+
+That command installs npm dependencies when needed, starts Ollama if it is not already running, pulls Gemma 4 plus the local embedding model, verifies the local Gemma runtime, and starts ContextFabric.
+
+Open the local demo UI:
+
+```text
+http://127.0.0.1:7749/ui
+```
+
+The fastest proof path is:
+
+1. Paste a paragraph into **Extract Context**.
+2. Click **Extract and save**.
+3. Confirm typed nodes appear with confidence scores.
+4. Check the **Claude Context Preview** panel.
 
 ## Install
 

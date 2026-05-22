@@ -95,7 +95,6 @@ export class OllamaService {
     if (!sourceModel || !/gemma4|gemma3/i.test(sourceModel)) return
 
     try {
-      console.log(`[Ollama] Creating memory-constrained model ${this.constrainedModelName} (num_ctx=${this.runtimeContext}) from ${sourceModel}...`)
       const ctrl = new AbortController()
       const tid = setTimeout(() => ctrl.abort(), 30000)
 
@@ -120,7 +119,6 @@ export class OllamaService {
       if (res.ok) {
         this.model = this.constrainedModelName
         this.constrainedModelReady = true
-        console.log(`[Ollama] Ready: using ${this.constrainedModelName} (num_ctx=${this.runtimeContext}, low-memory)`)
       } else {
         console.warn(`[Ollama] Model creation failed (HTTP ${res.status}): ${responseBody.substring(0, 300)}`)
         console.warn('[Ollama] Falling back to original model â€” OOM errors may occur')
@@ -214,7 +212,6 @@ export class OllamaService {
 
       const res = await this.client.post<OllamaGenerateResponse>('/api/generate', body, { timeout: timeoutMs, signal })
       const raw = res.data.response || ''
-      console.log('[Ollama] raw response length:', raw.length, '| first 120:', raw.substring(0, 120).replace(/\n/g, ' '))
       return this.clean(raw)
     } catch (err: unknown) {
       const axiosErr = err as { response?: { status?: number; data?: unknown }; message?: string; code?: string }
@@ -337,7 +334,6 @@ export class OllamaService {
     numPredict?: number,
     signal?: AbortSignal
   ): Promise<string> {
-    console.log(`[Ollama] generateStream using model: ${this.model}`)
     const body: Record<string, unknown> = {
       model: this.model,
       prompt,

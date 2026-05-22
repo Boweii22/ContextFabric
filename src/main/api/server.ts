@@ -34,6 +34,7 @@ function filterByPermissions(ids: string[], allowed: string[] | null): string[] 
 }
 
 function selectTokenNodes(nodes: MemoryNode[], query?: string, limit = 16): MemoryNode[] {
+  // Context payloads must prefer durable memory over generated bundles or raw chunks.
   const terms = (query || '')
     .toLowerCase()
     .split(/\s+/)
@@ -121,6 +122,7 @@ function isGeneratedOrBundledNode(node: MemoryNode): boolean {
 }
 
 function getOrCreateHttpSource(db: DatabaseService): DataSource {
+  // Manual API/UI additions share one stable source so users can audit them later.
   const id = 'local-http-api'
   const existing = db.getSource(id)
   if (existing) return existing
@@ -254,6 +256,7 @@ async function assembleTokenPayloadWithTimeout(
   input: { appId: string; query?: string; nodes: MemoryNode[]; maxWords?: number },
   timeoutMs = 15000
 ) {
+  // Keep extension and judge-demo requests responsive even when local Gemma is busy.
   let timer: NodeJS.Timeout | undefined
   const timeout = new Promise<ReturnType<typeof buildFallbackContextPayload>>(resolve => {
     timer = setTimeout(() => {
