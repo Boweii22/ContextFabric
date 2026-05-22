@@ -2,7 +2,7 @@ const DEFAULT_SETTINGS = {
   apiUrl: 'http://localhost:47821',
   appId: 'browser-extension',
   defaultQuery: 'current project context, writing style, technical decisions, preferences',
-  maxTokens: 1800,
+  maxTokens: 800,
 };
 
 async function getSettings() {
@@ -42,13 +42,50 @@ async function apiFetch(path, options = {}) {
 }
 
 function trimContext(context, maxTokens) {
-  const maxChars = Math.max(1600, Number(maxTokens || 1800) * 4);
+  const maxChars = Math.max(1200, Number(maxTokens || 800) * 6);
   if (context.length <= maxChars) return context;
   return `${context.slice(0, maxChars).trim()}\n\n[ContextFabric trimmed this bundle to fit the configured prompt size.]`;
 }
 
+function targetAppFromPayload(meta = {}) {
+  const host = `${meta.hostname || ''}`.toLowerCase();
+  const title = `${meta.pageTitle || ''}`.toLowerCase();
+  if (host.includes('claude') || title.includes('claude')) return 'claude';
+  if (host.includes('chatgpt') || host.includes('openai') || title.includes('chatgpt')) return 'chatgpt';
+  if (host.includes('cursor') || title.includes('cursor')) return 'cursor';
+  return 'generic';
+}
+
 function buildContextPrompt(context, meta = {}) {
   const title = meta.pageTitle ? ` for "${meta.pageTitle}"` : '';
+  const targetApp = targetAppFromPayload(meta);
+  if (targetApp === 'cursor') {
+    return [
+      `ContextFabric project memory${title}:`,
+      '',
+      trimContext(context, meta.maxTokens).trim(),
+      '',
+      'Use this as engineering background. Cite ContextFabric node ids when making project-specific claims.',
+    ].join('\n');
+  }
+  if (targetApp === 'claude') {
+    return [
+      `Please load this ContextFabric memory${title} as background context.`,
+      '',
+      trimContext(context, meta.maxTokens).trim(),
+      '',
+      'Acknowledge briefly that the memory is loaded, then continue naturally with the user task.',
+    ].join('\n');
+  }
+  if (targetApp === 'chatgpt') {
+    return [
+      `Use the following ContextFabric memory${title} before answering:`,
+      '',
+      trimContext(context, meta.maxTokens).trim(),
+      '',
+      'Keep the answer grounded in these memories and mention when there is not enough context.',
+    ].join('\n');
+  }
   return [
     `Use this ContextFabric memory${title} as background context before answering.`,
     'Respect these project facts, preferences, and decisions unless the user says otherwise.',
@@ -89,7 +126,12 @@ async function getContextBundle(payload = {}) {
 
   const token = await apiFetch('/api/token', {
     method: 'POST',
-    body: JSON.stringify({ query, ttlSeconds: 3600 }),
+    body: JSON.stringify({
+      query,
+      ttlSeconds: 3600,
+      targetApp: targetAppFromPayload(payload),
+      maxWords: settings.maxTokens,
+    }),
   });
 
   const retrieved = await apiFetch(`/api/token/${encodeURIComponent(token.token)}`, {

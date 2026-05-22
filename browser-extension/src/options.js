@@ -2,7 +2,7 @@ const DEFAULT_SETTINGS = {
   apiUrl: 'http://localhost:47821',
   appId: 'browser-extension',
   defaultQuery: 'current project context, writing style, technical decisions, preferences',
-  maxTokens: 1800,
+  maxTokens: 800,
 };
 
 const fields = {

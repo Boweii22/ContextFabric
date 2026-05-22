@@ -5,6 +5,13 @@ import {
   type ContextExtractionResult,
 } from '../../shared/contextExtraction'
 import { buildConflictDetectionPrompt, parseConflictDetection } from '../../shared/conflictDetection'
+import {
+  buildContextAssemblyPrompt,
+  buildFallbackContextPayload,
+  parseContextAssembly,
+  validateAssemblyGrounding,
+  type ContextAssemblyResult,
+} from '../../shared/contextAssembly'
 import type { MemoryConflict, MemoryNode } from '../../shared/types'
 
 interface OllamaGenerateResponse {
@@ -697,6 +704,30 @@ Return corrected JSON only:`
       }
     } catch {
       return null
+    }
+  }
+
+  async assembleContextPayload(input: {
+    appId: string
+    query?: string
+    nodes: MemoryNode[]
+    maxWords?: number
+  }): Promise<ContextAssemblyResult> {
+    const fallback = buildFallbackContextPayload(input)
+    if (input.nodes.length === 0) return fallback
+
+    try {
+      const response = await this.generate(buildContextAssemblyPrompt(input), 45000, undefined, 360)
+      const assembled = parseContextAssembly(response, input)
+      const grounding = validateAssemblyGrounding(assembled.payload, input.nodes, assembled.usedNodeIds)
+      const warnings = [...new Set([...assembled.warnings, ...grounding.warnings])]
+      if (grounding.ok || assembled.usedNodeIds.length > 0) {
+        return { ...assembled, warnings }
+      }
+      return { ...fallback, warnings: [...fallback.warnings, 'Gemma assembly lacked citations, so deterministic assembly was used.'] }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return { ...fallback, warnings: [...fallback.warnings, `Gemma assembly fallback used: ${message}`] }
     }
   }
 

@@ -12,7 +12,7 @@ import {
 import { v4 as uuidv4 } from 'uuid'
 import type {
   MemoryNode, MemoryEdge, DataSource, Entity,
-  TimelineEvent, AppSettings, Stats, AIQueryResult, ContextToken, ContextAccessLog,
+  TimelineEvent, AppSettings, Stats, AIQueryResult, ContextToken, ContextAccessLog, ContextAssemblyLog,
   AppAccessGrant, ContextPermissionRequest, CRSQLiteChange, CRSQLiteStatus, SyncPeer, MemoryConflict
 } from '../../shared/types'
 
@@ -34,7 +34,7 @@ import type {
 //   The sync_changes table maps directly to crsql_changes format
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 8
+const SCHEMA_VERSION = 9
 const CRR_TABLES = ['memory_nodes', 'memory_edges', 'data_sources', 'entities', 'timeline_events', 'query_history']
 
 export class DatabaseService {
@@ -347,10 +347,10 @@ export class DatabaseService {
         CREATE INDEX IF NOT EXISTS idx_context_tokens_expires ON context_tokens(expires_at);
         CREATE INDEX IF NOT EXISTS idx_context_tokens_app     ON context_tokens(app_id);
 
-        CREATE TABLE IF NOT EXISTS context_access_log (
-          id          TEXT    PRIMARY KEY,
-          app_id      TEXT    NOT NULL,
-          action      TEXT    NOT NULL,
+      CREATE TABLE IF NOT EXISTS context_access_log (
+        id          TEXT    PRIMARY KEY,
+        app_id      TEXT    NOT NULL,
+        action      TEXT    NOT NULL,
           token_hash  TEXT,
           source_ids  TEXT    NOT NULL DEFAULT '[]',
           query       TEXT,
@@ -358,10 +358,24 @@ export class DatabaseService {
           success     INTEGER NOT NULL DEFAULT 1,
           details     TEXT,
           created_at  INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
-        );
-        CREATE INDEX IF NOT EXISTS idx_context_access_created ON context_access_log(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_context_access_app     ON context_access_log(app_id);
-      `)
+      );
+      CREATE INDEX IF NOT EXISTS idx_context_access_created ON context_access_log(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_context_access_app     ON context_access_log(app_id);
+
+      CREATE TABLE IF NOT EXISTS context_assembly_log (
+        id              TEXT    PRIMARY KEY,
+        app_id          TEXT    NOT NULL,
+        app_format      TEXT    NOT NULL,
+        query           TEXT,
+        input_node_ids  TEXT    NOT NULL DEFAULT '[]',
+        output_payload  TEXT    NOT NULL,
+        word_count      INTEGER NOT NULL DEFAULT 0,
+        warnings        TEXT    NOT NULL DEFAULT '[]',
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+      );
+      CREATE INDEX IF NOT EXISTS idx_context_assembly_created ON context_assembly_log(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_context_assembly_app ON context_assembly_log(app_id);
+    `)
 
       this.setSchemaVersion(3)
     }
@@ -454,6 +468,25 @@ export class DatabaseService {
         CREATE INDEX IF NOT EXISTS idx_nodes_deleted_at ON memory_nodes(deleted_at);
       `)
       this.setSchemaVersion(8)
+    }
+
+    if (currentVersion < 9) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS context_assembly_log (
+          id              TEXT    PRIMARY KEY,
+          app_id          TEXT    NOT NULL,
+          app_format      TEXT    NOT NULL,
+          query           TEXT,
+          input_node_ids  TEXT    NOT NULL DEFAULT '[]',
+          output_payload  TEXT    NOT NULL,
+          word_count      INTEGER NOT NULL DEFAULT 0,
+          warnings        TEXT    NOT NULL DEFAULT '[]',
+          created_at      INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_context_assembly_created ON context_assembly_log(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_context_assembly_app ON context_assembly_log(app_id);
+      `)
+      this.setSchemaVersion(9)
     }
 
     this.initializeDefaultSettings()
@@ -1699,6 +1732,60 @@ export class DatabaseService {
       entry.details ? this.encrypt(entry.details) : null,
       Date.now()
     )
+  }
+
+  logContextAssembly(entry: {
+    appId: string
+    appFormat: ContextAssemblyLog['appFormat']
+    query?: string
+    inputNodeIds: string[]
+    outputPayload: string
+    wordCount: number
+    warnings: string[]
+  }): void {
+    this.db.prepare(`
+      INSERT INTO context_assembly_log
+        (id, app_id, app_format, query, input_node_ids, output_payload, word_count, warnings, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      uuidv4(),
+      entry.appId,
+      entry.appFormat,
+      entry.query ? this.encrypt(entry.query) : null,
+      this.jsonEncrypt(entry.inputNodeIds),
+      this.encrypt(entry.outputPayload),
+      entry.wordCount,
+      this.jsonEncrypt(entry.warnings),
+      Date.now()
+    )
+
+    this.logContextAccess({
+      appId: entry.appId,
+      action: 'context_assembly',
+      sourceIds: [],
+      query: entry.query,
+      scope: entry.appFormat,
+      success: true,
+      details: `${entry.inputNodeIds.length} node(s), ${entry.wordCount} word(s), ${entry.warnings.length} warning(s)`,
+    })
+  }
+
+  getContextAssemblyLogs(limit = 100): ContextAssemblyLog[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM context_assembly_log ORDER BY created_at DESC LIMIT ?'
+    ).all(limit) as Record<string, unknown>[]
+
+    return rows.map(row => ({
+      id: row['id'] as string,
+      appId: row['app_id'] as string,
+      appFormat: row['app_format'] as ContextAssemblyLog['appFormat'],
+      query: row['query'] ? this.decrypt(row['query'] as string) : undefined,
+      inputNodeIds: this.jsonDecrypt<string[]>(row['input_node_ids'], []),
+      outputPayload: this.decrypt(row['output_payload'] as string),
+      wordCount: Number(row['word_count'] || 0),
+      warnings: this.jsonDecrypt<string[]>(row['warnings'], []),
+      createdAt: row['created_at'] as number,
+    }))
   }
 
   getContextAccessLogs(limit = 100): ContextAccessLog[] {

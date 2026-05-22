@@ -2,6 +2,8 @@ import express from 'express'
 import type { Request, Response, NextFunction } from 'express'
 import type { DatabaseService } from '../services/database'
 import type { OllamaService } from '../services/ollama'
+import type { MemoryNode } from '../../shared/types'
+import { buildFallbackContextPayload } from '../../shared/contextAssembly'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,7 +29,119 @@ function filterByPermissions(ids: string[], allowed: string[] | null): string[] 
   return ids.filter(id => allowed.includes(id))
 }
 
+function selectTokenNodes(nodes: MemoryNode[], query?: string, limit = 16): MemoryNode[] {
+  const terms = (query || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .map(term => term.replace(/[^a-z0-9]/g, ''))
+    .filter(term => term.length > 2)
+
+  const scored = nodes
+    .filter(node => !isGeneratedOrBundledNode(node))
+    .map(node => ({ node, score: scoreTokenNode(node, terms, query || '') }))
+    .filter(item => !query || item.score > 0)
+    .sort((a, b) => b.score - a.score)
+
+  const selected = scored.slice(0, limit).map(item => item.node)
+  if (selected.length > 0) return selected
+
+  return nodes
+    .filter(node => !isGeneratedOrBundledNode(node))
+    .sort((a, b) => tokenTypeWeight(b) - tokenTypeWeight(a) || b.timestamp - a.timestamp)
+    .slice(0, limit)
+}
+
+function scoreTokenNode(node: MemoryNode, terms: string[], query: string): number {
+  const title = node.title.toLowerCase()
+  const content = node.content.toLowerCase()
+  const summary = (node.summary || '').toLowerCase()
+  const source = `${node.sourceName} ${node.sourceType}`.toLowerCase()
+  const metadata = `${node.tags.join(' ')} ${node.entities.join(' ')}`.toLowerCase()
+  const haystack = `${title} ${summary} ${content} ${source} ${metadata}`
+  let score = tokenTypeWeight(node)
+
+  if (isProjectContextQuery(query)) {
+    if (['project', 'decision', 'style', 'preference', 'person'].includes(node.type)) score += 40
+    if (/\b(readme|prompts|architecture|decision|adr|notes|writeup|docs?)\b/i.test(node.title)) score += 25
+    if (/\b(contextfabric|gemma|local-first|memory|permission|extension|sqlite|ollama)\b/i.test(haystack)) score += 16
+    if (node.type === 'code') score -= 18
+  }
+
+  for (const term of terms) {
+    if (title.includes(term)) score += 8
+    if (summary.includes(term)) score += 5
+    if (metadata.includes(term)) score += 4
+    if (content.includes(term)) score += 1
+  }
+
+  if (node.confidence >= 0.8) score += 8
+  if (node.summary) score += 4
+  return score
+}
+
+function tokenTypeWeight(node: MemoryNode): number {
+  const weights: Record<string, number> = {
+    project: 50,
+    decision: 45,
+    style: 40,
+    preference: 40,
+    person: 30,
+    document: 20,
+    note: 18,
+    conversation: 12,
+    code: 4,
+    entity: 2,
+  }
+  return weights[node.type] || 0
+}
+
+function isProjectContextQuery(query: string): boolean {
+  return /\b(project|working style|writing style|technical decisions|preferences|current context|context)\b/i.test(query)
+}
+
+function isGeneratedOrBundledNode(node: MemoryNode): boolean {
+  const title = node.title.toLowerCase()
+  const source = `${node.sourceName} ${node.sourceType}`.toLowerCase()
+  const contentStart = node.content.slice(0, 1200)
+  if (/\b(node_modules|\.vite|dist|out\/renderer|out\\renderer|build|coverage)\b/i.test(`${title} ${source}`)) return true
+  if (/\b(index|chunk|vendor|bundle|assets?)[-.][a-z0-9_-]{6,}\.(js|css)\b/i.test(title)) return true
+  if (/\.(min|bundle)\.(js|css)$/i.test(title)) return true
+  if (node.type === 'code') {
+    const longLines = contentStart.split(/\r?\n/).filter(line => line.length > 300).length
+    const symbolRatio = contentStart.length
+      ? (contentStart.match(/[{}();=><]/g)?.length || 0) / contentStart.length
+      : 0
+    if (longLines >= 2 || symbolRatio > 0.12) return true
+  }
+  return false
+}
+
 // ── Permission middleware ─────────────────────────────────────────────────────
+
+async function assembleTokenPayloadWithTimeout(
+  ollama: OllamaService,
+  input: { appId: string; query?: string; nodes: MemoryNode[]; maxWords?: number },
+  timeoutMs = 15000
+) {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<ReturnType<typeof buildFallbackContextPayload>>(resolve => {
+    timer = setTimeout(() => {
+      resolve({
+        ...buildFallbackContextPayload(input),
+        warnings: ['Gemma assembly timed out, so ContextFabric used deterministic local assembly.'],
+      })
+    }, timeoutMs)
+  })
+
+  try {
+    return await Promise.race([
+      ollama.assembleContextPayload(input),
+      timeout,
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 function permissionMiddleware(db: DatabaseService) {
   return (req: Request, res: Response, next: NextFunction): void => {
@@ -404,25 +518,38 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
   })
 
   // ── POST /api/token ─────────────────────────────────────────────────────────
-  apiRouter.post('/token', (req: Request, res: Response) => {
+  apiRouter.post('/token', async (req: Request, res: Response) => {
     try {
       const pr = req as PermRequest
-      const { query, ttlSeconds = 3600 } = req.body as { query?: string; ttlSeconds?: number }
-      const nodes = query
-        ? db.getNodes(500)
-            .filter(n => pr.allowedSourceIds === null || pr.allowedSourceIds.includes(n.sourceId))
-            .filter(n => query.toLowerCase().split(/\s+/).some(w => `${n.title} ${n.content}`.toLowerCase().includes(w)))
-            .slice(0, 10)
-        : db.getNodes(10).filter(n => pr.allowedSourceIds === null || pr.allowedSourceIds.includes(n.sourceId))
+      const {
+        query,
+        ttlSeconds = 3600,
+        targetApp,
+        maxWords = 800,
+      } = req.body as { query?: string; ttlSeconds?: number; targetApp?: string; maxWords?: number }
+      const availableNodes = db.getNodes(800)
+        .filter(n => pr.allowedSourceIds === null || pr.allowedSourceIds.includes(n.sourceId))
+      const nodes = selectTokenNodes(availableNodes, query, 16)
 
-      const decisions = db.getTimeline(5)
-      const summary = nodes.map(n => `${n.title}: ${(n.summary || n.content).substring(0, 100)}`).join('\n')
-      const context = [
-        query ? `Query context for: "${query}"` : 'Global memory snapshot',
-        `Sources: ${[...new Set(nodes.map(n => n.sourceName))].join(', ')}`,
-        `\n${summary}`,
-        decisions.length > 0 ? `\nKey decisions:\n${decisions.map(d => `- ${d.title}`).join('\n')}` : '',
-      ].filter(Boolean).join('\n')
+      const assembly = await assembleTokenPayloadWithTimeout(ollama, {
+        appId: targetApp || pr.appId,
+        query,
+        nodes,
+        maxWords,
+      })
+      const summary = assembly.payload.substring(0, 220)
+      const context = assembly.payload
+      const sourceIds = [...new Set(nodes.map(n => n.sourceId))]
+
+      db.logContextAssembly({
+        appId: pr.appId,
+        appFormat: assembly.appFormat,
+        query,
+        inputNodeIds: nodes.map(n => n.id),
+        outputPayload: assembly.payload,
+        wordCount: assembly.wordCount,
+        warnings: assembly.warnings,
+      })
 
       const created = db.createContextToken({
         context,
@@ -430,7 +557,7 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
         query,
         appId: pr.appId,
         scope: query ? 'query-context' : 'global-context',
-        sourceIds: [...new Set(nodes.map(n => n.sourceId))],
+        sourceIds,
         ttlSeconds,
       })
 
@@ -440,11 +567,23 @@ export function startApiServer(db: DatabaseService, ollama: OllamaService, port:
         ttlSeconds,
         nodeCount: nodes.length,
         summary: created.summary,
+        assembly: {
+          appFormat: assembly.appFormat,
+          wordCount: assembly.wordCount,
+          usedNodeIds: assembly.usedNodeIds,
+          warnings: assembly.warnings,
+        },
         scope: created.scope,
         sourceIds: created.sourceIds,
         publicKey: db.getContextPublicKey(),
         retrieveUrl: `http://localhost:${port}/api/token/${created.token}`,
       })
+    } catch (err) { res.status(500).json({ error: String(err) }) }
+  })
+
+  apiRouter.get('/context/assembly-logs', (_req: Request, res: Response) => {
+    try {
+      res.json(db.getContextAssemblyLogs(100))
     } catch (err) { res.status(500).json({ error: String(err) }) }
   })
 

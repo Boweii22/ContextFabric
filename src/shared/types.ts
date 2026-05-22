@@ -212,13 +212,25 @@ export interface ContextToken {
 export interface ContextAccessLog {
   id: string
   appId: string
-  action: 'permission_requested' | 'permission_granted' | 'token_issued' | 'token_retrieved' | 'context_query' | 'context_inject' | 'memory_search' | 'denied' | 'token_revoked'
+  action: 'permission_requested' | 'permission_granted' | 'token_issued' | 'token_retrieved' | 'context_query' | 'context_inject' | 'context_assembly' | 'memory_search' | 'denied' | 'token_revoked'
   tokenHash?: string
   sourceIds: string[]
   query?: string
   scope?: string
   success: boolean
   details?: string
+  createdAt: number
+}
+
+export interface ContextAssemblyLog {
+  id: string
+  appId: string
+  appFormat: 'claude' | 'chatgpt' | 'cursor' | 'generic'
+  query?: string
+  inputNodeIds: string[]
+  outputPayload: string
+  wordCount: number
+  warnings: string[]
   createdAt: number
 }
 

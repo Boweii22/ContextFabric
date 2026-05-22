@@ -91,3 +91,28 @@ Run:
 ```bash
 npm run test:conflicts
 ```
+
+## Payload Assembly
+
+The payload assembler prompt is defined in [contextAssembly.ts](src/shared/contextAssembly.ts) as `PAYLOAD_ASSEMBLY_SYSTEM_PROMPT`.
+
+It takes the relevant approved graph nodes and asks Gemma 4 to produce a coherent brief for the target AI tool instead of dumping raw JSON. The assembler supports app-aware formats:
+
+- `claude`: concise prose with context, decisions, working style, and usage guidance.
+- `chatgpt`: compact bullet-oriented memory.
+- `cursor`: engineering-focused project, architecture, coding preference, and source sections.
+- `generic`: neutral compact brief.
+
+Grounding rules:
+
+- Gemma may only use supplied nodes.
+- Concrete claims must cite source node ids like `[node:abc]`.
+- Unsupported facts, names, metrics, dates, and claims are omitted.
+- The default brief limit is 800 words.
+- Every assembly call is logged locally with input node ids, output payload, word count, and warnings for debugging.
+
+Run:
+
+```bash
+npm run test:assembly
+```
