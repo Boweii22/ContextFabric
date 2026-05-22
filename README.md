@@ -6,6 +6,32 @@ ContextFabric gives your AI tools a shared, private memory graph. It imports rea
 
 This project is built for the **DEV Gemma 4 Challenge: Build With Gemma 4**.
 
+## Screenshots
+
+### AI Query with Local Gemma 4
+
+Ask questions across your private memory graph and get source-backed answers.
+
+![AI Query with Local Gemma 4](docs/screenshots/ai-query.png)
+
+### Local Context Extraction
+
+Gemma 4 turns messy notes, repos, and exports into structured memory nodes on-device.
+
+![Local Context Extraction](docs/screenshots/extraction.png)
+
+### Permissioned Context Access
+
+External tools only receive the context you approve, for the duration you choose.
+
+![Permissioned Context Access](docs/screenshots/permissions.png)
+
+### Browser Extension Bridge
+
+Inject approved local memory into Claude, ChatGPT, Cursor, Perplexity, and other AI tools.
+
+![Browser Extension Bridge](docs/screenshots/browser-extension.png)
+
 ## Why Gemma 4
 
 ContextFabric needs a model that can run locally, read messy project context, and turn it into useful structured memory without sending private data to a cloud service.
