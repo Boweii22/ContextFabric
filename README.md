@@ -2,6 +2,8 @@
 
 **A local-first AI memory layer powered by Gemma 4.**
 
+Created and developed by **Bowei Tombri**.
+
 ContextFabric gives your AI tools a shared, private memory graph. It imports real folders, repos, ChatGPT exports, Claude exports, notes, and documents, then uses local Gemma 4 through Ollama to extract useful context, reason over it, and answer with source citations.
 
 This project is built for the **DEV Gemma 4 Challenge: Build With Gemma 4**.

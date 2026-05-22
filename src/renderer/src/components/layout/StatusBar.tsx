@@ -48,6 +48,7 @@ export default function StatusBar(): React.ReactElement {
         <div className="flex items-center gap-3">
           <StatusItem icon={<Circle className="w-2.5 h-2.5 fill-current" />} value={`${stats.totalNodes.toLocaleString()} nodes`} />
           <StatusItem icon={<Cpu className="w-2.5 h-2.5" />} value="Local" />
+          <span className="text-2xs text-slate-600">by Bowei Tombri</span>
           <span className="text-2xs text-slate-600">v1.0.0</span>
         </div>
       )}

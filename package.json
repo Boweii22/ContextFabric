@@ -4,7 +4,7 @@
   "description": "One Memory Across Every AI Tool - Your local AI memory operating system",
   "main": "./out/main/index.js",
   "homepage": "https://contextfabric.ai",
-  "author": "ContextFabric",
+  "author": "Bowei Tombri",
   "license": "MIT",
   "engines": {
     "node": ">=20 <24",

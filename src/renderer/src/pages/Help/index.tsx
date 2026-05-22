@@ -55,6 +55,9 @@ export default function HelpPage(): React.ReactElement {
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
             A practical checklist for testing local memory, Gemma 4 answers, permission approvals, imports, sync, and the browser bridge.
           </p>
+          <p className="mt-2 text-xs font-medium text-slate-500">
+            Created and developed by Bowei Tombri.
+          </p>
         </header>
 
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
