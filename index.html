@@ -92,7 +92,7 @@
           <h1><span class="shine">One private memory</span> across every AI tool.</h1>
           <p class="lede">ContextFabric turns your local notes, repos, exports, and decisions into a permissioned memory graph. Gemma 4 runs on your device to extract context, resolve contradictions, and assemble app-specific briefs for Claude, ChatGPT, Cursor, Perplexity, and more.</p>
           <div class="hero-actions">
-            <a class="button primary" href="#download">Get ContextFabric</a>
+            <a class="button primary" href="https://github.com/Boweii22/ContextFabric/releases/download/v0.1.0/ContextFabric-1.0.0-win-unpacked.zip">Download app</a>
             <a class="button secondary" href="https://github.com/Boweii22/ContextFabric#5-minute-judge-setup">Run in 5 minutes</a>
             <a class="button ghost" href="https://github.com/Boweii22/ContextFabric/blob/master/GEMMA4.md">Gemma 4 proof</a>
           </div>
@@ -183,31 +183,32 @@ http://127.0.0.1:7749/ui</code></pre>
       <div>
         <p class="eyebrow">Download</p>
         <h2>Run ContextFabric on your own machine.</h2>
-        <p>Use the source build today, or publish the packaged desktop zip as a GitHub Release asset for a true one-click app download. The browser extension is installed unpacked until the Chrome Web Store listing is approved.</p>
+        <p>Install ContextFabric like a normal app, add the Chrome extension, and let your AI tools use approved local memory. Developers and judges can still clone the source if they want to inspect everything.</p>
       </div>
       <div class="download-grid">
         <article class="install-card">
-          <h3>Run the full app</h3>
-          <p>Best path for judges: clone the repo, start Ollama, pull Gemma 4, and launch the desktop app with one command.</p>
+          <h3>Download for Windows</h3>
+          <p>Get the packaged desktop app. Unzip it, open ContextFabric, and keep your AI memory on your own machine.</p>
+          <code class="mini-code">Windows build
+Version v0.1.0
+Local-first desktop app</code>
+          <a class="button primary" href="https://github.com/Boweii22/ContextFabric/releases/download/v0.1.0/ContextFabric-1.0.0-win-unpacked.zip">Download for Windows</a>
+        </article>
+        <article id="extension" class="install-card">
+          <h3>Install Chrome extension</h3>
+          <p>Add the browser bridge so Claude, ChatGPT, Gemini, Perplexity, Cursor, and other AI tools can receive approved context.</p>
+          <code class="mini-code">Chrome Web Store
+ContextFabric Bridge
+One-click install after review</code>
+          <a class="button secondary" href="https://chromewebstore.google.com/detail/contextfabric-bridge/akhimjhdhkbfbmmmhcklkccicbfgeicl">Install extension</a>
+        </article>
+        <article class="install-card">
+          <h3>Developer setup</h3>
+          <p>For judges, builders, and open-source reviewers who want to run the full project from source.</p>
           <code class="mini-code">git clone https://github.com/Boweii22/ContextFabric.git
 cd ContextFabric
 npm run start</code>
-          <a class="button primary" href="https://github.com/Boweii22/ContextFabric/archive/refs/tags/v0.1.0.zip">Download source zip</a>
-        </article>
-        <article id="extension" class="install-card">
-          <h3>Install the extension</h3>
-          <p>Open Chrome extensions, enable Developer Mode, choose Load unpacked, then select the project’s browser-extension folder.</p>
-          <code class="mini-code">chrome://extensions
-Developer mode: on
-Load unpacked: browser-extension</code>
-          <a class="button secondary" href="https://github.com/Boweii22/ContextFabric/blob/master/browser-extension/README.md">Extension install guide</a>
-        </article>
-        <article class="install-card">
-          <h3>Desktop release asset</h3>
-          <p>After the GitHub Release is created, this button can point directly to the Windows/Mac installer file instead of the releases page.</p>
-          <code class="mini-code">Target asset:
-ContextFabric-1.0.0-win-unpacked.zip</code>
-          <a class="button ghost" href="https://github.com/Boweii22/ContextFabric/releases/new?tag=v0.1.0">Create GitHub Release</a>
+          <a class="button ghost" href="https://github.com/Boweii22/ContextFabric#5-minute-judge-setup">Setup guide</a>
         </article>
       </div>
     </section>
