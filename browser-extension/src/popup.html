@@ -13,8 +13,18 @@
         <span data-state>Checking...</span>
       </header>
       <p data-message>Looking for the local daemon.</p>
+      <label class="toggle">
+        <input data-enabled type="checkbox">
+        <span>Enable on supported AI chats</span>
+      </label>
+      <dl>
+        <div>
+          <dt>Last injected</dt>
+          <dd data-last-injected>Never</dd>
+        </div>
+      </dl>
       <div class="actions">
-        <button type="button" data-request>Request access</button>
+        <button type="button" data-refresh>Refresh</button>
         <button type="button" data-options>Options</button>
       </div>
     </main>

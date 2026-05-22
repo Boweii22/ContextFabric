@@ -22,6 +22,7 @@
     "assets:brand": "node scripts/generate-brand-assets.mjs",
     "verify:gemma": "node scripts/verify-gemma.mjs",
     "extension:validate": "node scripts/package-extension.mjs --validate",
+    "extension:e2e": "node scripts/test-extension-flow.mjs",
     "extension:package": "node scripts/package-extension.mjs",
     "postinstall": "electron-builder install-app-deps"
   },

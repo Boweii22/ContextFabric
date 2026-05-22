@@ -8,6 +8,8 @@
   "minimum_chrome_version": "116",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
+    "http://localhost:7749/*",
+    "http://127.0.0.1:7749/*",
     "http://localhost:47821/*",
     "http://127.0.0.1:47821/*",
     "https://chatgpt.com/*",

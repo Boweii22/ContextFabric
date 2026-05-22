@@ -25,9 +25,21 @@ const CONTEXTFABRIC_HOSTS = {
 
 const platformName = CONTEXTFABRIC_HOSTS[window.location.hostname] || 'this AI tool';
 const DEFAULT_QUERY = 'current project context, writing style, technical decisions, preferences';
+let currentRoute = location.href;
+let routeTimer = null;
+let bridgeObserver = null;
 
 function sendToBackground(type, payload = {}) {
   return chrome.runtime.sendMessage({ type, payload });
+}
+
+async function getBridgeState() {
+  try {
+    const state = await sendToBackground('CF_GET_STATE');
+    return state || { settings: { enabled: true, autoInject: true } };
+  } catch {
+    return { settings: { enabled: true, autoInject: true } };
+  }
 }
 
 function isEditable(element) {
@@ -102,7 +114,44 @@ async function copyPrompt(text) {
   await navigator.clipboard.writeText(text);
 }
 
-function createBridge() {
+function routeKey() {
+  return `${location.hostname}${location.pathname}${location.search}`;
+}
+
+function injectedRoutes() {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem('contextfabric.injectedRoutes') || '[]'));
+  } catch {
+    return new Set();
+  }
+}
+
+function markRouteInjected(key) {
+  const routes = injectedRoutes();
+  routes.add(key);
+  sessionStorage.setItem('contextfabric.injectedRoutes', JSON.stringify([...routes].slice(-30)));
+}
+
+function routeAlreadyInjected(key) {
+  return injectedRoutes().has(key);
+}
+
+function editableHasUserText() {
+  const target = findEditable();
+  if (!target) return true;
+  const tag = target.tagName?.toLowerCase();
+  const text = tag === 'textarea' || tag === 'input'
+    ? target.value
+    : target.innerText || target.textContent || '';
+  return Boolean(text.trim());
+}
+
+async function createBridge() {
+  const state = await getBridgeState();
+  if (state.settings && state.settings.enabled === false) {
+    document.getElementById('contextfabric-bridge')?.remove();
+    return;
+  }
   if (document.getElementById('contextfabric-bridge')) return;
   if (!document.body) return;
 
@@ -148,8 +197,8 @@ function createBridge() {
       query: query.value.trim(),
     });
 
-    if (result?.status === 'permission_required') {
-      setStatus('Approval needed. Open ContextFabric Permissions and grant the request, then try again.', 'warn');
+    if (result?.status === 'disabled') {
+      setStatus('ContextFabric Bridge is turned off in the popup.', 'warn');
       return null;
     }
 
@@ -159,6 +208,31 @@ function createBridge() {
     }
 
     return result.prompt;
+  }
+
+  async function injectContext({ automatic = false } = {}) {
+    const prompt = await getPrompt();
+    if (!prompt) return false;
+    const inserted = insertIntoEditable(prompt);
+    if (inserted) {
+      const key = routeKey();
+      markRouteInjected(key);
+      await sendToBackground('CF_RECORD_INJECTION', {
+        hostname: window.location.hostname,
+        pageTitle: document.title,
+        route: key,
+        query: query.value.trim(),
+      });
+      setStatus(automatic ? 'Context auto-injected for this new chat.' : 'Context inserted into the chat box.', 'ok');
+      return true;
+    }
+    if (!automatic) {
+      await copyPrompt(prompt);
+      setStatus('No chat box found. Context copied instead.', 'warn');
+    } else {
+      setStatus('Waiting for chat input before auto-injecting.', 'warn');
+    }
+    return false;
   }
 
   trigger.addEventListener('click', () => {
@@ -171,15 +245,7 @@ function createBridge() {
 
   root.querySelector('[data-inject]').addEventListener('click', async () => {
     try {
-      const prompt = await getPrompt();
-      if (!prompt) return;
-      const inserted = insertIntoEditable(prompt);
-      if (inserted) {
-        setStatus('Context inserted into the chat box.', 'ok');
-      } else {
-        await copyPrompt(prompt);
-        setStatus('No chat box found. Context copied instead.', 'warn');
-      }
+      await injectContext();
     } catch (error) {
       setStatus(error.message || 'Could not inject context.', 'error');
     }
@@ -196,19 +262,70 @@ function createBridge() {
     }
   });
 
+  root.addEventListener('contextfabric:auto-inject', () => {
+    injectContext({ automatic: true }).catch(error => {
+      setStatus(error.message || 'Could not auto-inject context.', 'error');
+    });
+  });
+
   document.body.appendChild(root);
+  maybeAutoInject();
+}
+
+async function maybeAutoInject() {
+  const state = await getBridgeState();
+  if (!state.settings?.enabled || !state.settings?.autoInject) return;
+  const key = routeKey();
+  if (routeAlreadyInjected(key)) return;
+  if (editableHasUserText()) return;
+  const root = document.getElementById('contextfabric-bridge');
+  if (!root) return;
+  const button = root.querySelector('[data-inject]');
+  if (!button) return;
+  setTimeout(() => {
+    if (!routeAlreadyInjected(key) && !editableHasUserText()) {
+      root.dispatchEvent(new Event('contextfabric:auto-inject'));
+    }
+  }, 800);
+}
+
+function onRouteChanged() {
+  if (currentRoute === location.href) return;
+  currentRoute = location.href;
+  if (routeTimer) clearTimeout(routeTimer);
+  routeTimer = setTimeout(() => {
+    createBridge();
+    maybeAutoInject();
+  }, 900);
+}
+
+function patchHistory() {
+  if (window.__contextfabricHistoryPatched) return;
+  window.__contextfabricHistoryPatched = true;
+  for (const method of ['pushState', 'replaceState']) {
+    const original = history[method];
+    history[method] = function patchedHistoryMethod(...args) {
+      const result = original.apply(this, args);
+      window.dispatchEvent(new Event('contextfabric:locationchange'));
+      return result;
+    };
+  }
+  window.addEventListener('popstate', () => window.dispatchEvent(new Event('contextfabric:locationchange')));
+  window.addEventListener('contextfabric:locationchange', onRouteChanged);
 }
 
 function keepBridgeMounted() {
+  patchHistory();
   createBridge();
 
-  const observer = new MutationObserver(() => {
+  bridgeObserver = new MutationObserver(() => {
     if (!document.getElementById('contextfabric-bridge')) {
       createBridge();
     }
+    onRouteChanged();
   });
 
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  bridgeObserver.observe(document.documentElement, { childList: true, subtree: true });
 
   window.addEventListener('pageshow', createBridge);
   document.addEventListener('visibilitychange', () => {

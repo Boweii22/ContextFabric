@@ -1,8 +1,10 @@
 const DEFAULT_SETTINGS = {
-  apiUrl: 'http://localhost:47821',
+  apiUrl: 'http://127.0.0.1:7749',
   appId: 'browser-extension',
   defaultQuery: 'current project context, writing style, technical decisions, preferences',
   maxTokens: 800,
+  enabled: true,
+  autoInject: true,
 };
 
 async function getSettings() {
@@ -120,30 +122,49 @@ async function ensurePermission(reason) {
 
 async function getContextBundle(payload = {}) {
   const settings = await getSettings();
+  if (!settings.enabled) {
+    return { status: 'disabled', error: 'ContextFabric Bridge is turned off in the popup.' };
+  }
+
   const query = payload.query || settings.defaultQuery;
-  const permission = await ensurePermission(`Inject context into ${payload.hostname || 'an AI chat'}.`);
-  if (!permission.allowed) return { status: 'permission_required', ...permission };
-
-  const token = await apiFetch('/api/token', {
-    method: 'POST',
-    body: JSON.stringify({
-      query,
-      ttlSeconds: 3600,
-      targetApp: targetAppFromPayload(payload),
-      maxWords: settings.maxTokens,
-    }),
+  const targetApp = targetAppFromPayload(payload);
+  const params = new URLSearchParams({
+    app: targetApp,
+    query,
+    maxWords: String(settings.maxTokens || 800),
   });
-
-  const retrieved = await apiFetch(`/api/token/${encodeURIComponent(token.token)}`, {
-    method: 'GET',
-  });
+  const assembled = await apiFetch(`/context?${params.toString()}`, { method: 'GET' });
 
   return {
     status: 'ready',
-    token,
-    context: retrieved.context,
-    prompt: buildContextPrompt(retrieved.context, { ...payload, maxTokens: settings.maxTokens }),
+    context: assembled.payload,
+    assembly: assembled,
+    prompt: buildContextPrompt(assembled.payload, { ...payload, maxTokens: settings.maxTokens }),
   };
+}
+
+async function getBridgeState() {
+  const settings = await getSettings();
+  const state = await chrome.storage.local.get({
+    lastInjectedAt: null,
+    lastInjectedHost: '',
+    lastInjectedRoute: '',
+    lastInjectedApp: '',
+    lastInjectedQuery: '',
+  });
+  return { settings, ...state };
+}
+
+async function recordInjection(payload = {}) {
+  const entry = {
+    lastInjectedAt: new Date().toISOString(),
+    lastInjectedHost: payload.hostname || '',
+    lastInjectedRoute: payload.route || '',
+    lastInjectedApp: targetAppFromPayload(payload),
+    lastInjectedQuery: payload.query || '',
+  };
+  await chrome.storage.local.set(entry);
+  return entry;
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -155,19 +176,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return;
     }
 
+    if (message.type === 'CF_RECORD_INJECTION') {
+      sendResponse({ ok: true, ...(await recordInjection(message.payload || {})) });
+      return;
+    }
+
+    if (message.type === 'CF_GET_STATE') {
+      sendResponse(await getBridgeState());
+      return;
+    }
+
     if (message.type === 'CF_GET_STATUS') {
       const settings = await getSettings();
       try {
-        const health = await apiFetch('/health', { headers: { 'X-ContextFabric-App': settings.appId } });
-        sendResponse({ connected: true, settings, health });
+        const health = await apiFetch('/health');
+        sendResponse({ connected: true, settings, health, ...(await getBridgeState()) });
       } catch (error) {
-        sendResponse({ connected: false, settings, error: error.message });
+        sendResponse({ connected: false, settings, error: error.message, ...(await getBridgeState()) });
       }
       return;
     }
 
     if (message.type === 'CF_SAVE_SETTINGS') {
       await chrome.storage.sync.set(message.settings || {});
+      sendResponse({ ok: true, settings: await getSettings() });
+      return;
+    }
+
+    if (message.type === 'CF_SET_ENABLED') {
+      await chrome.storage.sync.set({ enabled: Boolean(message.enabled) });
       sendResponse({ ok: true, settings: await getSettings() });
     }
   })().catch(error => {

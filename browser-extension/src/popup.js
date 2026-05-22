@@ -1,38 +1,41 @@
 const state = document.querySelector('[data-state]');
 const message = document.querySelector('[data-message]');
+const enabled = document.querySelector('[data-enabled]');
+const lastInjected = document.querySelector('[data-last-injected]');
 
 function setStatus(label, text) {
   state.textContent = label;
   message.textContent = text;
 }
 
+function formatLastInjected(result) {
+  if (!result?.lastInjectedAt) return 'Never';
+  const date = new Date(result.lastInjectedAt);
+  const host = result.lastInjectedHost ? ` on ${result.lastInjectedHost}` : '';
+  return `${date.toLocaleString()}${host}`;
+}
+
 async function refresh() {
   const result = await chrome.runtime.sendMessage({ type: 'CF_GET_STATUS' });
+  enabled.checked = result?.settings?.enabled !== false;
+  lastInjected.textContent = formatLastInjected(result);
   if (result?.connected) {
-    setStatus('Connected', `Daemon found at ${result.settings.apiUrl}. Use the CF button on supported AI sites to inject context.`);
+    setStatus('Connected', `Daemon found at ${result.settings.apiUrl}. ${enabled.checked ? 'Auto-inject is ready for new chats.' : 'Bridge is currently off.'}`);
   } else {
     setStatus('Offline', result?.error || 'Start ContextFabric, then try again.');
   }
 }
 
-document.querySelector('[data-request]').addEventListener('click', async () => {
-  setStatus('Requesting', 'Sending a permission request to ContextFabric.');
-  const result = await chrome.runtime.sendMessage({
-    type: 'CF_GET_CONTEXT',
-    payload: {
-      hostname: 'browser extension popup',
-      pageTitle: 'Permission check',
-      query: 'current project context',
-    },
-  });
+enabled.addEventListener('change', async () => {
+  await chrome.runtime.sendMessage({ type: 'CF_SET_ENABLED', enabled: enabled.checked });
+  setStatus(enabled.checked ? 'Enabled' : 'Off', enabled.checked
+    ? 'ContextFabric will inject on supported AI chats.'
+    : 'ContextFabric will not inject or show the page button.');
+});
 
-  if (result?.status === 'permission_required') {
-    setStatus('Approval needed', 'Open ContextFabric Permissions and approve the browser-extension request.');
-  } else if (result?.status === 'ready') {
-    setStatus('Approved', 'The extension can retrieve approved context.');
-  } else {
-    setStatus('Error', result?.error || 'Could not request access.');
-  }
+document.querySelector('[data-refresh]').addEventListener('click', async () => {
+  setStatus('Checking', 'Looking for the local ContextFabric API.');
+  await refresh();
 });
 
 document.querySelector('[data-options]').addEventListener('click', () => {

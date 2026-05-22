@@ -11,7 +11,7 @@
       <h1>ContextFabric Bridge</h1>
       <label>
         Daemon URL
-        <input data-api-url type="url" placeholder="http://localhost:47821">
+        <input data-api-url type="url" placeholder="http://127.0.0.1:7749">
       </label>
       <label>
         App ID
@@ -24,6 +24,18 @@
       <label>
         Max brief size, words
         <input data-max-tokens type="number" min="120" max="2000" step="50">
+      </label>
+      <label>
+        <span>
+          <input data-enabled type="checkbox">
+          Enable bridge
+        </span>
+      </label>
+      <label>
+        <span>
+          <input data-auto-inject type="checkbox">
+          Auto-inject on new chats
+        </span>
       </label>
       <div class="actions">
         <button type="button" data-save>Save</button>

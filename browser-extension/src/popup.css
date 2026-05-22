@@ -34,6 +34,41 @@ p {
   line-height: 19px;
 }
 
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+  color: #344054;
+  font-size: 13px;
+}
+
+.toggle input {
+  width: 16px;
+  height: 16px;
+}
+
+dl {
+  margin: 0 0 12px;
+  padding: 8px;
+  border: 1px solid #eaecf0;
+  border-radius: 7px;
+  background: #f9fafb;
+}
+
+dt {
+  color: #667085;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+dd {
+  margin: 3px 0 0;
+  color: #101828;
+  font-size: 12px;
+  line-height: 17px;
+}
+
 .actions {
   display: flex;
   gap: 8px;
