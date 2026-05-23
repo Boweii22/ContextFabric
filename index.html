@@ -51,16 +51,18 @@
     .floating{position:absolute;border:1px solid rgba(255,255,255,.14);border-radius:18px;background:rgba(13,20,32,.74);backdrop-filter:blur(18px);box-shadow:0 22px 60px rgba(0,0,0,.28)}.node-card{right:-14px;top:300px;width:210px;padding:16px;animation:floatSmall 5.5s ease-in-out infinite}.node-card b{display:block;margin-bottom:8px}.node-card p{margin:0;color:var(--muted);font-size:13px}.token-card{left:-22px;bottom:44px;width:226px;padding:14px;animation:floatSmall 6.5s ease-in-out infinite reverse}.token-card span{display:block;color:#c8f6ff;font-size:12px;font-weight:900}.token-card code{display:block;margin-top:8px;color:#8da2c0;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
     .section{padding:104px clamp(18px,5vw,72px)}.inner{width:min(1180px,100%);margin:auto}.section-head{max-width:820px;margin-bottom:34px}.eyebrow{margin:0 0 12px;color:var(--cyan);font-size:13px;font-weight:950;letter-spacing:.12em;text-transform:uppercase}h2{margin-bottom:16px;font-size:clamp(31px,4.4vw,56px);line-height:1.04;letter-spacing:0}.section-head p,.split-copy p,.gemma-copy p,.download p{color:var(--muted);font-size:18px}
+    .video-card{overflow:hidden;border:1px solid rgba(255,255,255,.14);border-radius:24px;background:rgba(255,255,255,.06);box-shadow:0 24px 100px rgba(0,0,0,.28)}.video-frame{position:relative;aspect-ratio:16/9;background:#050812}.video-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}.video-note{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px;color:var(--muted);font-size:14px}.video-note strong{color:#fff}
     .trust{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;width:min(1180px,calc(100% - 36px));margin:0 auto;overflow:hidden;border:1px solid rgba(255,255,255,.12);border-radius:18px;background:rgba(255,255,255,.06)}.trust span{padding:20px;text-align:center;color:#e6edf8;font-weight:900;background:rgba(255,255,255,.035)}
     .steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.step{position:relative;overflow:hidden;min-height:250px;padding:24px;border:1px solid rgba(255,255,255,.12);border-radius:20px;background:linear-gradient(180deg,rgba(255,255,255,.075),rgba(255,255,255,.035));transition:transform .24s ease,border-color .24s ease}.step:hover{transform:translateY(-6px);border-color:rgba(72,221,255,.34)}.step:after{content:"";position:absolute;right:-44px;bottom:-44px;width:150px;height:150px;border:1px solid rgba(72,221,255,.18);border-radius:50%}.num{display:inline-grid;place-items:center;width:38px;height:38px;margin-bottom:30px;border-radius:12px;background:rgba(124,92,255,.22);color:#d9d2ff;font-weight:950}.step p{color:var(--muted)}
     .gemma-band{border-block:1px solid rgba(255,255,255,.1);background:linear-gradient(120deg,rgba(124,92,255,.17),rgba(72,221,255,.08) 48%,rgba(33,211,143,.1))}.gemma{display:grid;grid-template-columns:minmax(0,.9fr) minmax(320px,.72fr);gap:50px;align-items:center}.checks{display:grid;gap:14px;margin:0;padding:0;list-style:none}.checks li{position:relative;padding:17px 18px 17px 46px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:rgba(5,7,13,.44);color:#dfe8f5}.checks li:before{content:"";position:absolute;left:18px;top:24px;width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 18px rgba(33,211,143,.55)}
     .split{display:grid;grid-template-columns:minmax(0,.8fr) minmax(360px,.7fr);gap:48px;align-items:center}.terminal{margin:0;overflow:auto;padding:24px;border:1px solid rgba(72,221,255,.24);border-radius:18px;background:#050812;color:#dff7ff;font-size:15px;line-height:1.75;box-shadow:0 20px 70px rgba(0,0,0,.25)}.terminal em{color:#8da2c0;font-style:normal}
-    .download{width:min(1180px,calc(100% - 36px));margin:0 auto 76px;padding:44px;border:1px solid rgba(255,255,255,.14);border-radius:24px;background:linear-gradient(135deg,rgba(255,255,255,.09),rgba(255,255,255,.04));box-shadow:0 24px 100px rgba(0,0,0,.26)}.download-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:28px}.install-card{display:flex;flex-direction:column;min-height:260px;padding:22px;border:1px solid rgba(255,255,255,.12);border-radius:18px;background:rgba(5,7,13,.38)}.install-card h3{margin-bottom:8px}.install-card p{color:var(--muted);font-size:15px}.install-card .button{margin-top:auto}.mini-code{display:block;margin:14px 0 18px;padding:12px;border:1px solid rgba(72,221,255,.18);border-radius:12px;background:#050812;color:#dff7ff;font-size:12px;white-space:pre-wrap}
+    .download{width:min(1180px,calc(100% - 36px));margin:0 auto 76px;padding:44px;border:1px solid rgba(255,255,255,.14);border-radius:24px;background:linear-gradient(135deg,rgba(255,255,255,.09),rgba(255,255,255,.04));box-shadow:0 24px 100px rgba(0,0,0,.26)}.download-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:28px}.install-card{display:flex;flex-direction:column;min-height:260px;padding:22px;border:1px solid rgba(255,255,255,.12);border-radius:18px;background:rgba(5,7,13,.38)}.install-card h3{margin-bottom:8px}.install-card p{color:var(--muted);font-size:15px}.install-card .button{margin-top:auto}.mini-code{display:block;margin:14px 0 18px;padding:12px;border:1px solid rgba(72,221,255,.18);border-radius:12px;background:#050812;color:#dff7ff;font-size:12px;white-space:pre-wrap;overflow:auto;overflow-wrap:anywhere}
     footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:28px clamp(18px,5vw,72px);border-top:1px solid rgba(255,255,255,.08);color:var(--muted)}footer strong{color:#fff}footer a{color:#b8efff}
     .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s ease,transform .7s ease}.reveal.visible{opacity:1;transform:none}
     @keyframes pulse{70%{box-shadow:0 0 0 9px rgba(33,211,143,0)}}@keyframes shine{to{background-position:200% center}}@keyframes floatCard{0%,100%{transform:rotateX(4deg) rotateY(-7deg) translateY(0)}50%{transform:rotateX(2deg) rotateY(-4deg) translateY(-12px)}}@keyframes sweep{0%,42%{transform:translateX(-120%)}62%,100%{transform:translateX(120%)}}@keyframes floatSmall{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
-    @media(max-width:1040px){nav{display:none}.hero-grid,.gemma,.split{grid-template-columns:1fr}.demo-shell{min-height:auto}.product-card{transform:none}.steps,.trust,.download-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media(max-width:680px){.header{top:10px;border-radius:14px}.header-cta{display:none}.hero{padding-top:112px}.proof-row,.steps,.trust,.download-grid{grid-template-columns:1fr}.app{grid-template-columns:1fr}.side{display:none}.floating{display:none}.download{padding:28px}.button{width:100%}h1{font-size:clamp(42px,13vw,64px)}}
+    @media(max-width:1040px){nav{display:none}.hero-grid,.gemma,.split{grid-template-columns:1fr}.demo-shell{min-height:auto;width:min(100%,680px);margin:auto}.product-card{transform:none}.steps,.trust,.download-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:680px){#fabric{opacity:.42}.header{top:10px;border-radius:14px;width:calc(100% - 20px);gap:10px}.brand{font-size:14px}.brand .mark{width:32px;height:32px;border-radius:10px}.header-cta{display:none}.hero{min-height:auto;padding:106px 14px 42px}.hero-grid{gap:26px}.kicker{max-width:100%;white-space:normal;border-radius:14px;font-size:11px;line-height:1.35}.lede{font-size:16px;line-height:1.65}.hero-actions{margin-top:24px}.proof-row,.steps,.trust,.download-grid{grid-template-columns:1fr}.proof strong{font-size:22px}.demo-shell{width:100%}.product-card{border-radius:18px}.window{height:40px}.app{grid-template-columns:1fr;min-height:0}.side{display:none}.answer{padding:18px}.answer h2{font-size:19px}.bubble{padding:15px;font-size:14px}.floating{display:none}.section{padding:64px 14px}.section-head p,.split-copy p,.gemma-copy p,.download p{font-size:16px}.step{min-height:auto;padding:20px}.trust{width:calc(100% - 28px)}.trust span{padding:16px}.video-card{border-radius:18px}.video-note{display:block;padding:15px}.video-note span{display:block;margin-top:6px}.gemma{gap:28px}.checks li{padding:15px 15px 15px 40px}.split{gap:26px}.terminal{padding:16px;font-size:12px;line-height:1.65}.download{width:calc(100% - 28px);padding:22px;margin-bottom:44px;border-radius:18px}.install-card{min-height:auto;padding:18px}.button{width:100%;min-height:46px}h1{font-size:clamp(40px,13vw,58px);line-height:.96}h2{font-size:clamp(28px,9vw,40px)}footer{display:block;text-align:center}footer span,footer a{display:block;margin-top:8px}}
+    @media(max-width:420px){.hero{padding-left:12px;padding-right:12px}.answer{padding:15px}.sources span{font-size:11px}.download{width:calc(100% - 20px);padding:18px}.mini-code{font-size:11px}.video-note{font-size:13px}}
     @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.reveal{opacity:1;transform:none}}
   </style>
 </head>
@@ -77,6 +79,7 @@
     </a>
     <nav aria-label="Primary navigation">
       <a href="#how">How it works</a>
+      <a href="#demo">Demo</a>
       <a href="#gemma">Gemma 4</a>
       <a href="#verify">Verify</a>
       <a href="#download">Download</a>
@@ -129,6 +132,30 @@
 
     <section class="trust reveal" aria-label="Privacy and capability claims">
       <span>Runs locally with Ollama</span><span>Encrypted SQLite graph</span><span>Permissioned context tokens</span><span>Browser extension bridge</span>
+    </section>
+
+    <section id="demo" class="section">
+      <div class="inner">
+        <div class="section-head reveal">
+          <p class="eyebrow">Watch The Demo</p>
+          <h2>See ContextFabric extract memory and inject it into an AI chat.</h2>
+          <p>The walkthrough shows the full loop: local Gemma 4 extraction, source-backed memory, permission approval, and browser extension injection.</p>
+        </div>
+        <div class="video-card reveal">
+          <div class="video-frame">
+            <iframe
+              src="https://www.youtube.com/embed/JXotcEEsY8M"
+              title="ContextFabric demo video"
+              loading="lazy"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowfullscreen></iframe>
+          </div>
+          <div class="video-note">
+            <strong>90-second product demo</strong>
+            <span>Built by Bowei Tombri for the DEV Gemma 4 Challenge.</span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section id="how" class="section">
